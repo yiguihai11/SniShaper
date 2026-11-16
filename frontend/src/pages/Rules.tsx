@@ -1,214 +1,604 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Plus, Search, Filter, ExternalLink, Edit3, Trash2, Zap, Activity
+  Plus, Search, Filter, Edit, ExternalLink, Delete, Activity, Bolt, RefreshCcw, X, History, Monitor
 } from '../lib/icons';
 import {
-  GetSiteGroups, DeleteSiteGroup, ExportConfig
+  GetSiteGroups, DeleteSiteGroup, ExportConfig, EventsOn, UpdateRules,
+  GetRulesLayerInfo, RevertSiteGroupToUpstream, ExplainMatch
 } from '../api/bindings';
-import { Button } from '../components/ui/Button';
-import { EmptyState } from '../components/ui/EmptyState';
+import {
+  Box, Typography, Button, IconButton, TextField, InputAdornment, Chip, Divider,
+} from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import Modal from '../components/Modal';
 import RuleForm from '../components/RuleForm';
 import { toast } from '../lib/toast';
-import { cn } from '../lib/utils';
 import { useTranslation } from '../i18n/I18nContext';
 
-const FILTER_MODES = ['ALL', 'MITM', 'SERVER', 'TLS-RF', 'QUIC', 'TRANSPARENT'] as const;
+const FILTER_MODES = ['ALL', 'MITM', 'TLS-RF', 'QUIC', 'TRANSPARENT', 'MIGRATION'] as const;
+type FilterMode = typeof FILTER_MODES[number];
+
+const SOURCE_FILTERS = ['all', 'default', 'override', 'user'] as const;
+type SourceFilter = typeof SOURCE_FILTERS[number];
 
 const normalizeMode = (value: unknown) => String(value || '').trim().toLowerCase();
 
 const getEffectiveMode = (group: any) => {
   const mode = normalizeMode(group?.mode);
-  const upstream = normalizeMode(group?.upstream);
   if (mode === 'quic') return 'QUIC';
   if (mode === 'tls-rf') return 'TLS-RF';
-  if (mode === 'server') return 'SERVER';
   if (mode === 'mitm') return 'MITM';
   if (mode === 'transparent') return 'TRANSPARENT';
+  if (mode === 'migration') return 'MIGRATION';
   return mode ? mode.toUpperCase() : 'DIRECT';
 };
 
-const RuleItem: React.FC<{ group: any; onEdit: (group: any) => void; onDelete: (id: string) => void }> = ({ group, onEdit, onDelete }) => {
+// Generic Tabs component
+interface FilterTabsProps<T extends string> {
+  options: readonly T[];
+  value: T;
+  onChange: (value: T) => void;
+  getLabel: (option: T) => string;
+  color?: 'primary' | 'secondary';
+  ariaLabel: string;
+  isTab?: boolean;
+}
+
+const FilterTabs = <T extends string>({
+  options,
+  value,
+  onChange,
+  getLabel,
+  color = 'primary',
+  ariaLabel,
+  isTab = false,
+}: FilterTabsProps<T>) => {
+  const activeColor = `${color}.main`;
+
+  return (
+    <Box
+      sx={{
+        display: 'inline-flex', alignItems: 'center', gap: 0.75, p: 0.5,
+        border: 1, borderColor: 'divider', borderRadius: 2,
+        width: 'fit-content', flexWrap: 'wrap', minWidth: 0,
+      }}
+      role={isTab ? 'tablist' : 'group'}
+      aria-label={ariaLabel}
+    >
+      {options.map((opt) => {
+        const active = value === opt;
+        return (
+          <Button
+            key={opt}
+            onClick={() => onChange(opt)}
+            role={isTab ? 'tab' : undefined}
+            aria-selected={isTab ? active : undefined}
+            aria-pressed={!isTab ? active : undefined}
+            size="small"
+            sx={{
+              px: 2, py: 0.5, borderRadius: 1.5, fontSize: 10, fontWeight: 900, letterSpacing: '0.05em',
+              textTransform: 'uppercase', minWidth: 0, color: active ? activeColor : 'text.secondary',
+              bgcolor: active ? (theme: any) => alpha(theme.palette[color].main, 0.12) : 'transparent',
+              boxShadow: active ? (theme: any) => `0 4px 12px ${alpha(theme.palette[color].main, 0.15)}` : 'none',
+              '&:hover': {
+                bgcolor: active ? (theme: any) => alpha(theme.palette[color].main, 0.12) : 'action.hover',
+              },
+            }}
+          >
+            {getLabel(opt)}
+          </Button>
+        );
+      })}
+    </Box>
+  );
+};
+
+const RuleItem: React.FC<{ group: any; layer?: string; onEdit: (group: any) => void; onDelete: (id: string) => void; onRevert: (group: any) => void }> = ({ group, layer, onEdit, onDelete, onRevert }) => {
   const { t } = useTranslation();
+
+  const layerBadge = (label: string, color: string) => (
+    <Box
+      component="span"
+      title={label}
+      sx={{
+        fontSize: 9, fontWeight: 800, letterSpacing: '0.05em', textTransform: 'uppercase',
+        px: 0.75, py: 0.15, borderRadius: 1, flexShrink: 0,
+        color: (theme: any) => theme.palette[color].main,
+        bgcolor: (theme: any) => alpha(theme.palette[color].main, 0.12),
+      }}
+    >
+      {label}
+    </Box>
+  );
+
   const getModeDisplay = (mode: string) => {
     switch (mode) {
       case 'TRANSPARENT': return t('rules.display.transparent');
       case 'DIRECT': return t('rules.display.direct');
       case 'TLS-RF': return t('rules.display.fragment');
+      case 'MIGRATION': return t('rules.display.migration');
       default: return mode;
     }
   };
+
   const modeColors: Record<string, string> = {
-    'server': 'text-purple-600 dark:text-purple-400',
-    'mitm': 'text-amber-600 dark:text-amber-400',
-    'transparent': 'text-danger',
-    'quic': 'text-success',
-    'tls-rf': 'text-blue-600 dark:text-blue-400'
+    'mitm': 'warning.main',
+    'transparent': 'error.main',
+    'quic': 'success.main',
+    'tls-rf': 'primary.main',
+    'migration': 'secondary.main'
   };
+
   const getEffectiveUpstream = (group: any) => {
     const upstream = String(group.upstream || '').trim();
     if (upstream && upstream.toUpperCase() !== 'DIRECT') return upstream;
-    if (group.use_cf_pool) return 'CF IP POOL';
-    if (group.mode === 'server') return 'REMOTE SERVER';
-    return 'DOH DYNAMIC';
+    const pool = String(group.ip_pool || '').trim();
+    if (pool) return t('rules.display.ip_pool_name', { name: pool });
+    if (group.use_cf_pool) return t('rules.display.cf_ip_pool');
+    return t('rules.display.doh_dynamic');
   };
+
   const effectiveMode = getEffectiveMode(group);
   const modeKey = normalizeMode(group?.mode) || normalizeMode(effectiveMode);
 
   return (
-    <div className="group flex items-center gap-4 py-3 px-6 bg-background-card hover:bg-background-hover border-b border-border/60 transition-colors">
-      <div className="flex-1 min-w-0 flex items-center gap-6">
-        <div className="w-1/3 min-w-0">
-          <h3 className="text-sm font-bold text-text-primary truncate">{group.name || t('common.unknown')}</h3>
-          <p className="text-[10px] text-text-muted font-medium truncate uppercase tracking-wider">{group.website || 'Default'}</p>
-        </div>
-        <div className="flex-1 min-w-0 hidden md:block">
-          <div className="flex gap-2 overflow-hidden items-center">
-            {(group.domains || []).slice(0, 4).map((d: string, i: number) => (
-              <span key={i} className="text-[9px] bg-background-soft px-2 py-0.5 rounded border border-border/40 text-text-secondary whitespace-nowrap font-mono">{d}</span>
-            ))}
-            {(group.domains || []).length > 4 && (
-              <span className="text-[10px] text-text-muted font-bold px-1 opacity-50">+{(group.domains || []).length - 4}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="w-32 shrink-0 flex flex-col items-end px-3 border-r border-border/30 mr-2">
-        <span className={cn('text-[10px] font-black uppercase tracking-widest', modeColors[modeKey] || 'text-text-muted')}>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1.5, px: 3, bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider', transition: 'background-color 0.2s', '&:hover': { bgcolor: 'action.hover' }, minWidth: 0 }}>
+      <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap' }}>
+        <Box sx={{ width: { xs: '100%', md: '33%' }, minWidth: 0, flexShrink: 0 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, maxWidth: '100%' }}>
+            <Typography variant="body2" sx={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', py: 0.25, outline: '1px solid transparent' }}>{group.name || t('common.unknown')}</Typography>
+            {layer === 'override' && layerBadge(t('rules.override_badge'), 'warning')}
+            {layer === 'user' && layerBadge(t('rules.custom_badge'), 'secondary')}
+          </Box>
+          <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>{group.website || t('rules.display.default_group')}</Typography>
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0, display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 1, overflow: 'hidden' }}>
+          {(group.domains || []).slice(0, 4).map((d: string, i: number) => (
+            <Typography key={i} variant="caption" sx={{ fontSize: 9, bgcolor: 'action.hover', px: 1, py: 0.25, borderRadius: 1, border: 1, borderColor: 'divider', color: 'text.secondary', whiteSpace: 'nowrap', }}>{d}</Typography>
+          ))}
+          {(group.domains || []).length > 4 && (
+            <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 700, px: 0.5, opacity: 0.5 }}>+{(group.domains || []).length - 4}</Typography>
+          )}
+          {group.process && (
+            <Typography variant="caption" sx={{ fontSize: 9, bgcolor: 'action.hover', px: 1, py: 0.25, borderRadius: 1, border: 1, borderColor: 'divider', color: 'text.secondary', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 0.5 }} title={group.process}>
+              <Monitor size={9} aria-hidden />{group.process}
+            </Typography>
+          )}
+        </Box>
+      </Box>
+      <Box sx={{ width: 128, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', px: 1.5, borderRight: 1, borderColor: 'divider', mr: 1 }}>
+        <Typography variant="caption" sx={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em', color: modeColors[modeKey] || 'text.secondary', py: 0.25, outline: '1px solid transparent' }}>
           {getModeDisplay(effectiveMode)}
-        </span>
-        <div className="flex items-center gap-1.5 text-[10px] text-text-muted font-bold truncate max-w-full">
-          <Activity size={10} className="text-success" aria-hidden />
-          <span className="truncate uppercase">{getEffectiveUpstream(group)}</span>
-        </div>
-      </div>
-
-      <div className="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-all">
-        <button onClick={() => onEdit(group)} className="p-1.5 hover:bg-background-hover rounded text-text-secondary hover:text-accent" aria-label="编辑规则"><Edit3 size={15} /></button>
-        <button onClick={() => onDelete(group.id)} className="p-1.5 hover:bg-danger/10 rounded text-danger" aria-label="删除规则"><Trash2 size={15} /></button>
-      </div>
-    </div>
+        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.25, color: 'text.secondary', maxWidth: '100%', minWidth: 0 }}>
+          <Box component="span" sx={{ color: 'success.main', display: 'inline-flex', flexShrink: 0 }}>
+            <Activity size={10} aria-hidden />
+          </Box>
+          <Typography variant="caption" sx={{ fontSize: 10, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>{getEffectiveUpstream(group)}</Typography>
+        </Box>
+      </Box>
+      <Box sx={{ display: 'flex', gap: 0.75, flexShrink: 0 }}>
+        {layer === 'override' && (
+          <IconButton size="small" aria-label={t('rules.revert_aria')} onClick={() => onRevert(group)} sx={{ color: 'text.secondary', '&:hover': { bgcolor: 'action.hover', color: 'warning.main' } }}>
+            <History size={15} />
+          </IconButton>
+        )}
+        <IconButton size="small" aria-label={t('rules.edit_rule_aria')} onClick={() => onEdit(group)} sx={{ color: 'text.secondary', '&:hover': { bgcolor: 'action.hover', color: 'primary.main' } }}>
+          <Edit size={15} />
+        </IconButton>
+        <IconButton size="small" aria-label={t('rules.delete_rule_aria')} color="error" onClick={() => onDelete(group.id)}>
+          <Delete size={15} />
+        </IconButton>
+      </Box>
+    </Box>
   );
 };
 
 const Rules: React.FC = () => {
   const { t } = useTranslation();
   const [groups, setGroups] = useState<any[]>([]);
+  const [layerInfo, setLayerInfo] = useState<any>({});
   const [search, setSearch] = useState('');
-  const [filterMode, setFilterMode] = useState('ALL');
+  const [filterMode, setFilterMode] = useState<FilterMode>('ALL'); // Explicit generic type
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<any>(null);
   const [pendingDeleteGroup, setPendingDeleteGroup] = useState<any>(null);
+  const [pendingRevertGroup, setPendingRevertGroup] = useState<any>(null);
+  const [updatingRules, setUpdatingRules] = useState(false);
+  const [isExplainOpen, setIsExplainOpen] = useState(false);
+  const [explainHost, setExplainHost] = useState('');
+  const [explainProcess, setExplainProcess] = useState('');
+  const [explainResult, setExplainResult] = useState<any>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
 
   const loadData = async () => {
-    try { setGroups((await GetSiteGroups()) || []); }
-    catch (e) { console.error("Failed to load site groups:", e); }
+    try {
+      const [groups, info] = await Promise.all([GetSiteGroups(), GetRulesLayerInfo()]);
+      setGroups(groups || []);
+      setLayerInfo(info || {});
+    } catch (e) { console.error("Failed to load site groups:", e); }
   };
 
   useEffect(() => { loadData(); }, []);
 
+  useEffect(() => {
+    const unlisten = EventsOn('app:rules_changed', () => { loadData(); });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
   const handleAdd = () => { setEditingGroup(null); setIsModalOpen(true); };
+
+  // 模拟查询：与真实连接同一匹配管线，但只是预测，不产生路由事件。
+  const handleExplain = async () => {
+    const host = explainHost.trim();
+    if (!host || explainLoading) return;
+    setExplainLoading(true);
+    try {
+      const result = await ExplainMatch(host, explainProcess.trim());
+      setExplainResult(result || null);
+    } catch {
+      setExplainResult(null);
+    }
+    setExplainLoading(false);
+  };
+  const openExplain = () => {
+    setExplainResult(null);
+    setIsExplainOpen(true);
+  };
   const handleEdit = (group: any) => { setEditingGroup(group); setIsModalOpen(true); };
   const handleDelete = async (id: string) => {
     const target = groups.find((group) => group.id === id);
     setPendingDeleteGroup(target || { id });
   };
+  const handleRevert = (group: any) => setPendingRevertGroup(group);
+  const handleExport = async () => {
+    const cfg = await ExportConfig();
+    if (cfg) {
+      await navigator.clipboard.writeText(cfg);
+      toast.success(t('rules.copy_success'), t('rules.copy_hint'));
+    }
+  };
 
+  const shortHash = (value?: string) => (value ? String(value).slice(0, 12) : '-');
+
+  const handleUpdateRules = async () => {
+    if (updatingRules) return;
+    setUpdatingRules(true);
+    try {
+      const res: any = await UpdateRules();
+      if (res?.error) {
+        toast.error(t('rules.update_failed'), String(res.error));
+      } else if (res?.updated) {
+        toast.success(
+          t('rules.update_applied', { added: res.added ?? 0, changed: res.changed ?? 0, removed: res.removed ?? 0 }),
+          t('rules.update_applied_detail', {
+            local: shortHash(res.local_hash),
+            remote: shortHash(res.remote_hash),
+            date: res.remote_updated_at || '-',
+          })
+        );
+        await loadData();
+      } else {
+        toast.success(
+          t('rules.update_latest'),
+          t('rules.update_latest_detail', {
+            date: res?.remote_updated_at || '-',
+            hash: shortHash(res?.remote_hash),
+          })
+        );
+      }
+    } catch (err: any) {
+      toast.error(t('rules.update_failed'), String(err));
+    } finally {
+      setUpdatingRules(false);
+    }
+  };
+  const handleDeleteConfirm = async () => {
+    if (!pendingDeleteGroup?.id) return;
+    try {
+      await DeleteSiteGroup(pendingDeleteGroup.id);
+      setPendingDeleteGroup(null);
+      await loadData();
+      toast.success(t('rules.notifications.deleted'));
+    } catch (err: any) {
+      const detail = err && typeof err.message === 'string' && err.message ? err.message : err ? String(err) : '';
+      toast.error(t('rules.notifications.delete_error'), detail || t('rules.notifications.save_error_hint'));
+    }
+  };
+
+  const handleRevertConfirm = async () => {
+    if (!pendingRevertGroup?.id) return;
+    try {
+      await RevertSiteGroupToUpstream(pendingRevertGroup.id);
+      setPendingRevertGroup(null);
+      await loadData();
+      toast.success(t('rules.notifications.reverted'));
+    } catch (err: any) {
+      const detail = err && typeof err.message === 'string' && err.message ? err.message : err ? String(err) : '';
+      toast.error(t('rules.notifications.revert_error'), detail || t('rules.notifications.save_error_hint'));
+    }
+  };
+
+  const OTHERS_KEY = 'Others';
   const groupedResults = React.useMemo(() => {
     const filtered = groups.filter(g => {
-      const matchesSearch = (g.name || '') + (g.website || '') + (g.domains || []).join('')
-        .toLowerCase().includes(search.toLowerCase());
+      const haystack = ((g.name || '') + (g.website || '') + (g.domains || []).join('')).toLowerCase();
+      const matchesSearch = haystack.includes(search.toLowerCase());
       const matchesMode = filterMode === 'ALL' || getEffectiveMode(g) === filterMode;
-      return matchesSearch && matchesMode;
+      const layer = layerInfo?.site_group_layers?.[g.id];
+      const matchesSource =
+        sourceFilter === 'all'
+          ? true
+          : sourceFilter === 'default'
+            ? layer !== 'override' && layer !== 'user'
+            : layer === sourceFilter;
+      return matchesSearch && matchesMode && matchesSource;
     });
     const groups_map: Record<string, any[]> = {};
     filtered.forEach(item => {
-      const key = item.website || 'Others';
+      const key = item.website || OTHERS_KEY;
       if (!groups_map[key]) groups_map[key] = [];
       groups_map[key].push(item);
     });
     return Object.keys(groups_map).sort((a, b) => {
-      if (a === 'Others') return 1;
-      if (b === 'Others') return -1;
+      if (a === OTHERS_KEY) return 1;
+      if (b === OTHERS_KEY) return -1;
       return a.localeCompare(b);
-    }).map(key => ({ title: key, items: groups_map[key] }));
-  }, [groups, search, filterMode]);
+    }).map(key => ({ title: key === OTHERS_KEY ? t('rules.display.others') : key, items: groups_map[key] }));
+  }, [groups, search, filterMode, sourceFilter, layerInfo, t]);
 
   return (
-    <div className="p-5 max-w-5xl mx-auto space-y-4 animate-in fade-in duration-500">
-      <header className="flex justify-between items-center bg-background border border-border p-5 rounded-2xl shadow-sm">
-        <h1 className="text-xl font-black tracking-tight">{t('rules.title')}</h1>
-        <div className="flex gap-2">
-          <Button onClick={async () => { const cfg = await ExportConfig(); if (cfg) { await navigator.clipboard.writeText(cfg); toast.success(t('rules.copy_success'), t('rules.copy_hint')); } }}
-            variant="outline" size="sm" icon={<ExternalLink size={16} />} aria-label={t('common.view')} />
-          <Button onClick={handleAdd} variant="primary" size="md" icon={<Plus size={16} strokeWidth={3} />}>
+    <Box sx={{ pt: 2, width: '100%', flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'flex-end' }, gap: 2, mb: 2, flexShrink: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ p: 1.25, borderRadius: 1.5, border: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), borderColor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+            <Filter size={20} />
+          </Box>
+          <Typography variant="h5" data-tut="rules-title" sx={{ fontWeight: 700, letterSpacing: '-0.02em' }}>{t('rules.title')}</Typography>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button
+            onClick={openExplain}
+            variant="outlined"
+            size="small"
+            aria-label={t('rules.explain_title')}
+            startIcon={<Search size={16} />}
+          >
+            {t('rules.explain_button')}
+          </Button>
+          <Button
+            onClick={handleUpdateRules}
+            disabled={updatingRules}
+            variant="outlined"
+            size="small"
+            aria-label={t('rules.update_rules')}
+            startIcon={<RefreshCcw size={16} />}
+          >
+            {updatingRules ? t('rules.update_running') : t('rules.update_rules')}
+          </Button>
+          <Button onClick={handleExport} variant="outlined" size="small" aria-label={t('rules.export_aria')} sx={{ minWidth: 0, px: 1 }}>
+            <ExternalLink size={16} />
+          </Button>
+          <Button onClick={handleAdd} variant="contained" color="primary" size="small" startIcon={<Plus size={16} strokeWidth={3} />}>
             {t('rules.add_rule')}
           </Button>
-        </div>
-      </header>
+        </Box>
+      </Box>
 
-      <div className="sticky top-0 z-10 space-y-3 pt-2 bg-background/50 backdrop-blur-md pb-2">
-        <div className="flex items-center gap-1.5 p-1 bg-background-card border border-border rounded-xl w-fit shadow-sm" role="tablist" aria-label="筛选模式">
-          {FILTER_MODES.map((m) => (
-            <button key={m} onClick={() => setFilterMode(m)} role="tab" aria-selected={filterMode === m}
-              className={cn('px-4 py-1.5 rounded-lg text-[10px] font-black tracking-widest uppercase transition-all', filterMode === m ? 'bg-accent text-white shadow-md shadow-accent/20' : 'text-text-secondary hover:bg-background-hover')}>
-              {m === 'TLS-RF' ? t('rules.display.fragment') : m === 'TRANSPARENT' ? t('rules.display.transparent') : m}
-            </button>
-          ))}
-        </div>
+      <Box sx={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 1.5, pb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', minWidth: 0 }}>
+          
+          {/* Usage of the extracted component */}
+          <FilterTabs
+            options={FILTER_MODES}
+            value={filterMode}
+            onChange={setFilterMode}
+            getLabel={(m) =>
+              m === 'TLS-RF'
+                ? t('rules.display.fragment')
+                : m === 'TRANSPARENT'
+                ? t('rules.display.transparent')
+                : m === 'MIGRATION'
+                ? t('rules.display.migration')
+                : m
+            }
+            color="primary"
+            ariaLabel={t('rules.filter_mode_aria')}
+            isTab={true}
+          />
 
-        <div className="relative group">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted transition-colors group-focus-within:text-accent" size={16} aria-hidden />
-          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('rules.search_placeholder')}
-            className="w-full bg-background-card border border-border focus:border-accent/40 pl-11 pr-4 py-3 rounded-xl text-sm outline-none transition-all shadow-sm"
-            aria-label={t('rules.search_placeholder')} />
-        </div>
-      </div>
+          <FilterTabs
+            options={SOURCE_FILTERS}
+            value={sourceFilter}
+            onChange={setSourceFilter}
+            getLabel={(s) => t(`rules.source_${s}`)}
+            color="secondary"
+            ariaLabel={t('rules.filter_source_aria')}
+          />
+        </Box>
 
-      <div className="space-y-8 pb-10">
+        <TextField
+          fullWidth
+          size="small"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t('rules.search_placeholder')}
+          aria-label={t('rules.search_placeholder')}
+          slotProps={{
+            input: {
+              startAdornment: <InputAdornment position="start"><Search size={16} /></InputAdornment>,
+              endAdornment: search ? (
+                <InputAdornment position="end">
+                  <IconButton
+                    size="small"
+                    onClick={() => setSearch('')}
+                    aria-label={t('common.clear')}
+                    edge="end"
+                  >
+                    <X size={14} />
+                  </IconButton>
+                </InputAdornment>
+              ) : null,
+            },
+          }}
+        />
+      </Box>
+
+      <Box sx={{ flexGrow: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: 4, pb: 4 }}>
         {groupedResults.length === 0 ? (
-          <EmptyState icon={<Filter size={48} strokeWidth={1} />} title={t('rules.no_results')} className="border border-border rounded-2xl bg-background-card shadow-sm py-24 grayscale" />
+          <Box sx={{ py: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'text.secondary', bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, boxShadow: 1 }}>
+            <Filter size={48} strokeWidth={1} />
+            <Typography variant="body2" sx={{ mt: 1.5 }}>{t('rules.no_results')}</Typography>
+          </Box>
         ) : (
           groupedResults.map((group) => (
-            <section key={group.title} className="space-y-2">
-              <div className="flex items-center gap-2 px-2">
-                <div className="w-1.5 h-4 bg-accent rounded-full" aria-hidden />
-                <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-text-secondary flex items-center gap-2">
+            <Box key={group.title} sx={{ display: 'flex', flexDirection: 'column', gap: 1, flexShrink: 0 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1 }}>
+                <Box sx={{ width: 6, height: 16, bgcolor: 'primary.main', borderRadius: '999px' }} aria-hidden />
+                <Typography variant="caption" sx={{ fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: 'text.secondary', display: 'flex', alignItems: 'center', gap: 1 }}>
                   {group.title}
-                  <span className="text-[9px] bg-background-card border border-border px-1.5 py-0.5 rounded text-text-muted font-bold">{group.items.length}</span>
-                </h2>
-                <div className="flex-1 h-[1px] bg-gradient-to-r from-border/60 to-transparent" aria-hidden />
-              </div>
-              <div className="border border-border rounded-2xl overflow-hidden bg-background-card shadow-sm divide-y divide-border/40">
+                  <Box
+                    component="span"
+                    sx={{
+                      fontSize: 10,
+                      bgcolor: (theme) => alpha(theme.palette.text.secondary, 0.12),
+                      px: 0.75,
+                      py: 0.1,
+                      borderRadius: 1,
+                      color: 'text.secondary',
+                      fontWeight: 700
+                    }}
+                  >
+                    {group.items.length}
+                  </Box>
+                </Typography>
+              </Box>
+              <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 2, overflow: 'hidden', bgcolor: 'background.paper', boxShadow: 1 }}>
                 {group.items.map((item: any) => (
-                  <RuleItem key={item.id} group={item} onEdit={handleEdit} onDelete={handleDelete} />
+                  <RuleItem key={item.id} group={item} layer={layerInfo?.site_group_layers?.[item.id]} onEdit={handleEdit} onDelete={handleDelete} onRevert={handleRevert} />
                 ))}
-              </div>
-            </section>
+              </Box>
+            </Box>
           ))
         )}
-      </div>
+      </Box>
 
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingGroup ? t('rules.edit_rule') : t('rules.create_rule')} maxWidth="max-w-2xl"
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingGroup ? t('rules.edit_rule') : t('rules.create_rule')} maxWidth="42rem"
         footer={<>
-          <Button type="button" onClick={() => setIsModalOpen(false)} variant="outline" size="md">{t('common.cancel')}</Button>
-          <Button type="submit" form="rule-form" variant="primary" size="md" icon={<Zap size={16} />}>{editingGroup ? t('common.save') : t('common.save')}</Button>
+          <Button type="button" onClick={() => setIsModalOpen(false)} variant="outlined" size="small">{t('common.cancel')}</Button>
+          <Button type="submit" form="rule-form" variant="contained" color="primary" size="small" startIcon={<Bolt size={16} />}>{editingGroup ? t('common.save') : t('common.save')}</Button>
         </>}>
         <RuleForm initialData={editingGroup} onSuccess={() => { setIsModalOpen(false); loadData(); }} onCancel={() => setIsModalOpen(false)} />
       </Modal>
 
-      <Modal isOpen={Boolean(pendingDeleteGroup)} onClose={() => setPendingDeleteGroup(null)} title={t('rules.delete_rule')} subtitle={t('rules.delete_hint')} maxWidth="max-w-md"
+      <Modal isOpen={isExplainOpen} onClose={() => setIsExplainOpen(false)} title={t('rules.explain_title')} subtitle={t('rules.explain_subtitle')} maxWidth="34rem"
         footer={<>
-          <Button type="button" onClick={() => setPendingDeleteGroup(null)} variant="outline" size="md">{t('common.cancel')}</Button>
-          <Button type="button" onClick={async () => { if (!pendingDeleteGroup?.id) return; await DeleteSiteGroup(pendingDeleteGroup.id); setPendingDeleteGroup(null); await loadData(); toast.success(t('rules.notifications.deleted')); }}
-            variant="danger" size="md">{t('common.confirm')}</Button>
+          <Button type="button" onClick={() => setIsExplainOpen(false)} variant="outlined" size="small">{t('common.close')}</Button>
+          <Button type="button" onClick={handleExplain} variant="contained" color="primary" size="small" disabled={!explainHost.trim() || explainLoading}>
+            {explainLoading ? t('rules.explain_running') : t('rules.explain_run')}
+          </Button>
         </>}>
-        <div className="text-sm text-text-secondary leading-relaxed">
-          {t('common.delete')}<span className="mx-1 font-bold text-text-primary">{pendingDeleteGroup?.name || t('common.unknown')}</span>{t('rules.delete_warning')}
-        </div>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField
+              autoFocus
+              fullWidth
+              size="small"
+              label={t('rules.explain_host_label')}
+              placeholder="example.com"
+              value={explainHost}
+              onChange={(e) => setExplainHost(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleExplain(); }}
+            />
+            <TextField
+              size="small"
+              label={t('rules.explain_process_label')}
+              placeholder="chrome.exe"
+              value={explainProcess}
+              onChange={(e) => setExplainProcess(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleExplain(); }}
+              sx={{ minWidth: 150 }}
+            />
+          </Box>
+
+          {explainResult && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <Chip size="small" label={t('rules.explain_simulated_badge')} color="warning" variant="outlined" sx={{ alignSelf: 'flex-start' }} />
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 0.5, columnGap: 2, fontSize: '0.8rem', alignItems: 'baseline' }}>
+                <Typography variant="body2" color="text.secondary">{t('rules.explain_host')}</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 700, wordBreak: 'break-all' }}>{explainResult.host}</Typography>
+                <Typography variant="body2" color="text.secondary">{t('rules.explain_mode')}</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>{String(explainResult.mode || '—').toUpperCase()}</Typography>
+                <Typography variant="body2" color="text.secondary">{t('rules.explain_source')}</Typography>
+                <Typography variant="body2">{explainResult.source || '—'}</Typography>
+                <Typography variant="body2" color="text.secondary">{t('rules.explain_rule')}</Typography>
+                <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{explainResult.rule_domain || '—'}</Typography>
+                <Typography variant="body2" color="text.secondary">{t('rules.explain_upstream')}</Typography>
+                <Typography variant="body2">{explainResult.upstream || '—'}</Typography>
+                {explainResult.dns_mode && (<>
+                  <Typography variant="body2" color="text.secondary">{t('rules.explain_dns')}</Typography>
+                  <Typography variant="body2">{explainResult.dns_mode}</Typography>
+                </>)}
+                {explainResult.sni_fake && (<>
+                  <Typography variant="body2" color="text.secondary">{t('rules.explain_sni_fake')}</Typography>
+                  <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{explainResult.sni_fake}</Typography>
+                </>)}
+                <Typography variant="body2" color="text.secondary">ECH</Typography>
+                <Typography variant="body2">{explainResult.ech_enabled ? t('common.enabled') : t('common.disabled')}</Typography>
+              </Box>
+
+              {explainResult.downgraded && (
+                <Typography variant="body2" color="warning.main" sx={{ fontWeight: 700 }}>{t('rules.explain_downgraded')}</Typography>
+              )}
+
+              {Array.isArray(explainResult.candidates) && explainResult.candidates.length > 1 && (<>
+                <Divider />
+                <Typography variant="caption" sx={{ fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em' }} color="text.secondary">
+                  {t('rules.explain_candidates')}
+                </Typography>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                  {explainResult.candidates.map((c: any, i: number) => (
+                    <Box key={i} sx={{ display: 'flex', gap: 1, alignItems: 'baseline', fontSize: '0.75rem' }}>
+                      <Box component="span" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary', minWidth: 42 }}>{String(c.score)}</Box>
+                      <Box component="span" sx={{ fontWeight: i === 0 ? 700 : 400, wordBreak: 'break-all' }}>{c.domain}</Box>
+                      <Box component="span" sx={{ color: 'text.secondary', ml: 'auto', flexShrink: 0 }}>{String(c.mode || '').toUpperCase()}</Box>
+                    </Box>
+                  ))}
+                </Box>
+              </>)}
+
+              {Array.isArray(explainResult.notes) && explainResult.notes.length > 0 && (<>
+                <Divider />
+                {explainResult.notes.map((note: string, i: number) => (
+                  <Typography key={i} variant="body2" color="text.secondary">• {note}</Typography>
+                ))}
+              </>)}
+            </Box>
+          )}
+        </Box>
       </Modal>
-    </div>
+
+      <Modal isOpen={Boolean(pendingDeleteGroup)} onClose={() => setPendingDeleteGroup(null)} title={t('rules.delete_rule')} subtitle={t('rules.delete_hint')} maxWidth="28rem"
+        footer={<>
+          <Button type="button" onClick={() => setPendingDeleteGroup(null)} variant="outlined" size="small">{t('common.cancel')}</Button>
+          <Button type="button" onClick={handleDeleteConfirm} variant="contained" color="error" size="small">{t('common.confirm')}</Button>
+        </>}>
+        <Typography variant="body2" color="text.secondary">
+          {t('common.delete')}<Box component="span" sx={{ mx: 0.5, fontWeight: 'bold', color: 'text.primary' }}>{pendingDeleteGroup?.name || t('common.unknown')}</Box>{t('rules.delete_warning')}
+        </Typography>
+      </Modal>
+
+      <Modal isOpen={Boolean(pendingRevertGroup)} onClose={() => setPendingRevertGroup(null)} title={t('rules.revert_rule')} subtitle={t('rules.revert_hint')} maxWidth="28rem"
+        footer={<>
+          <Button type="button" onClick={() => setPendingRevertGroup(null)} variant="outlined" size="small">{t('common.cancel')}</Button>
+          <Button type="button" onClick={handleRevertConfirm} variant="contained" color="warning" size="small" startIcon={<History size={16} />}>{t('common.confirm')}</Button>
+        </>}>
+        <Typography variant="body2" color="text.secondary">
+          {t('rules.revert_prefix')}<Box component="span" sx={{ mx: 0.5, fontWeight: 'bold', color: 'text.primary' }}>{pendingRevertGroup?.name || t('common.unknown')}</Box>{t('rules.revert_warning')}
+        </Typography>
+      </Modal>
+    </Box>
   );
 };
 

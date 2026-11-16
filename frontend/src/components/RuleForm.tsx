@@ -1,27 +1,45 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Zap, 
-  Globe, 
-  ShieldCheck, 
-  Monitor, 
-  Server,
-  Cloud,
+import React, { useState, useEffect, useContext } from 'react';
+import {
+  Bolt,
+  Globe,
+  Monitor,
   ChevronDown,
   ChevronUp,
   Plus,
-  Trash2,
+  Delete,
   Lock,
   Settings,
   AlertCircle
 } from '../lib/icons';
-import { AddSiteGroup, UpdateSiteGroup, GetECHProfiles } from '../api/bindings';
+import { Box, Typography, TextField, Switch, IconButton, Button } from '@mui/material';
+import { alpha } from '@mui/material/styles';
+import { AddSiteGroup, UpdateSiteGroup, GetECHProfiles, GetNAT64Profiles, GetIPPools } from '../api/bindings';
 import { useTranslation } from '../i18n/I18nContext';
+import { SettingsCtx } from '../App';
+import { toast } from '../lib/toast';
 
 interface RuleFormProps {
   initialData?: any;
   onSuccess: () => void;
   onCancel: () => void;
 }
+
+const FRAG_DEFAULTS = { num_records: 4, num_segments: 1, interval_ms: 50, mod_minor_ver: true, oob: false };
+
+const fragFromBackend = (raw: any) => {
+  const r = raw || {};
+  const records = Number(r.num_records ?? FRAG_DEFAULTS.num_records) || FRAG_DEFAULTS.num_records;
+  return {
+    num_records: records,
+    num_segments: Number(r.num_segments ?? FRAG_DEFAULTS.num_segments) || FRAG_DEFAULTS.num_segments,
+    interval_ms: Math.max(0, Number(r.interval_ms ?? FRAG_DEFAULTS.interval_ms) || 0),
+    mod_minor_ver: r.mod_minor_ver === undefined || r.mod_minor_ver === null
+      ? FRAG_DEFAULTS.mod_minor_ver
+      : Boolean(r.mod_minor_ver),
+    oob: Boolean(r.oob),
+    tcp_only: records === 1
+  };
+};
 
 const normalizeCertVerify = (value: any) => {
   const next = {
@@ -57,13 +75,16 @@ const normalizeCertVerify = (value: any) => {
 
 const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel }) => {
   const { t } = useTranslation();
-  
+  const { cache } = useContext(SettingsCtx);
+  const ipv6Available = cache.ipv6Available !== false;
+  const ipv6Option = (id: string) => id === 'prefer_ipv6' || id === 'ipv6_only';
+
   const MODES = [
-    { id: 'mitm', label: 'MITM', icon: <Zap size={14} />, desc: t('rules.modes.mitm') },
-    { id: 'server', label: 'Server', icon: <Server size={14} />, desc: t('rules.modes.server') },
+    { id: 'mitm', label: 'MITM', icon: <Bolt size={14} />, desc: t('rules.modes.mitm') },
     { id: 'tls-rf', label: t('rules.display.fragment'), icon: <Monitor size={14} />, desc: t('rules.modes.tls-rf') },
-    { id: 'quic', label: 'QUIC', icon: <Zap size={14} />, desc: t('rules.modes.quic') },
-    { id: 'transparent', label: t('rules.display.transparent'), icon: <Monitor size={14} />, desc: t('rules.modes.transparent') }
+    { id: 'quic', label: 'QUIC', icon: <Bolt size={14} />, desc: t('rules.modes.quic') },
+    { id: 'transparent', label: t('rules.display.transparent'), icon: <Monitor size={14} />, desc: t('rules.modes.transparent') },
+    { id: 'migration', label: t('rules.display.migration'), icon: <Globe size={14} />, desc: t('rules.modes.migration') }
   ];
 
   const DNS_OPTIONS = [
@@ -90,6 +111,7 @@ const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel })
     mode: 'mitm',
     upstream: '',
     domains: [] as string[],
+    process: '',
     dns_mode: '',
     sni_fake: '',
     enabled: true,
@@ -97,6 +119,9 @@ const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel })
     ech_profile_id: '',
     ech_domain: '',
     use_cf_pool: false,
+    ip_pool: '',
+    nat64_enabled: false,
+    nat64_profile_id: '',
     cert_verify: {
       mode: '',
       names: [],
@@ -108,11 +133,15 @@ const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel })
   const [domainInput, setDomainInput] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [echProfiles, setEchProfiles] = useState<any[]>([]);
+  const [nat64Profiles, setNat64Profiles] = useState<any[]>([]);
+  const [ipPools, setIPPools] = useState<any[]>([]);
 
   useEffect(() => {
     const loadProfiles = async () => {
-      const ps = await GetECHProfiles();
+      const [ps, ns, pools] = await Promise.all([GetECHProfiles(), GetNAT64Profiles(), GetIPPools()]);
       setEchProfiles(ps || []);
+      setNat64Profiles(ns || []);
+      setIPPools(Array.isArray(pools) ? pools : []);
     };
     loadProfiles();
 
@@ -122,7 +151,12 @@ const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel })
         data.upstream = '';
       }
       data.cert_verify = normalizeCertVerify(data.cert_verify);
+      data.nat64_enabled = Boolean(data.nat64_enabled);
+      data.nat64_profile_id = String(data.nat64_profile_id || '');
+      data.ip_pool = String(data.ip_pool || '');
+      data.process = String(data.process || '');
       setFormData(data);
+      setFrag(fragFromBackend(data.frag));
     }
   }, [initialData]);
 
@@ -150,14 +184,21 @@ const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel })
       cert_verify: normalizeCertVerify(formData.cert_verify),
       upstream: String(formData.upstream || '').trim().toUpperCase() === 'DIRECT'
         ? ''
-        : String(formData.upstream || '').trim()
+        : String(formData.upstream || '').trim(),
+      frag: currentMode === 'tls-rf' ? buildFragPayload() : null
     };
-    if (formData.id) {
-      await UpdateSiteGroup(payload);
-    } else {
-      await AddSiteGroup(payload);
+    try {
+      if (formData.id) {
+        await UpdateSiteGroup(payload);
+      } else {
+        await AddSiteGroup(payload);
+      }
+      toast.success(t('rules.notifications.save_success'));
+      onSuccess();
+    } catch (err: any) {
+      const detail = err && typeof err.message === 'string' && err.message ? err.message : err ? String(err) : '';
+      toast.error(t('rules.notifications.save_error'), detail || t('rules.notifications.save_error_hint'));
     }
-    onSuccess();
   };
 
   const certVerifyMode = String(formData.cert_verify?.mode || '').trim();
@@ -168,13 +209,45 @@ const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel })
       ...patch
     }
   });
-  const toggleBooleanField = (field: 'enabled' | 'ech_enabled' | 'use_cf_pool') =>
+  const toggleBooleanField = (field: 'enabled' | 'ech_enabled' | 'use_cf_pool' | 'nat64_enabled') =>
     setFormData({ ...formData, [field]: !formData[field] });
 
   const currentMode = String(formData.mode || '').trim().toLowerCase();
-  const showSniFake = ['mitm', 'quic'].includes(currentMode);
-  const showEchConfig = ['mitm', 'server', 'quic'].includes(currentMode);
-  const showCertVerify = ['mitm', 'quic'].includes(currentMode);
+  const showSniFake = ['mitm', 'quic', 'migration'].includes(currentMode);
+  const showEchConfig = ['mitm', 'quic'].includes(currentMode);
+  const showCertVerify = ['mitm', 'quic', 'migration'].includes(currentMode);
+  const showNat64Config = ['mitm', 'quic', 'tls-rf', 'transparent', 'migration'].includes(currentMode);
+  const showCfPool = ['mitm', 'transparent', 'tls-rf', 'quic'].includes(currentMode);
+  const showFragment = currentMode === 'tls-rf';
+
+  const [frag, setFrag] = useState<any>(fragFromBackend(null));
+
+  const setFragField = (field: string, value: any) => {
+    setFrag((prev: any) => ({ ...prev, [field]: value }));
+  };
+  const toggleFragmentField = (field: 'tcp_only' | 'mod_minor_ver' | 'oob') => {
+    setFrag((prev: any) => {
+      const next = { ...prev };
+      if (field === 'tcp_only') {
+        next.tcp_only = !next.tcp_only;
+        next.num_records = next.tcp_only ? 1 : FRAG_DEFAULTS.num_records;
+        next.num_segments = next.tcp_only ? 4 : FRAG_DEFAULTS.num_segments;
+      } else {
+        next[field] = !next[field];
+      }
+      return next;
+    });
+  };
+  const resetFragment = () => setFrag(fragFromBackend(null));
+
+  const buildFragPayload = () => ({
+    num_records: Number(frag.num_records) || 4,
+    num_segments: Number(frag.num_segments) || 1,
+    interval_ms: Math.max(0, Number(frag.interval_ms) || 0),
+    mod_minor_ver: Boolean(frag.mod_minor_ver),
+    oob: Boolean(frag.oob),
+    oob_ex: false
+  });
 
   const splitListInput = (value: string) =>
     value
@@ -184,358 +257,485 @@ const RuleForm: React.FC<RuleFormProps> = ({ initialData, onSuccess, onCancel })
 
   const joinListInput = (items: string[] | undefined) => (items || []).join('\n');
 
+  const inputRootSx = {
+    bgcolor: 'action.hover',
+    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'primary.main' },
+  };
+  const inputSx = { '& .MuiOutlinedInput-root': inputRootSx };
+
+  const sectionLabelSx = {
+    fontWeight: 900,
+    color: 'text.secondary',
+    textTransform: 'uppercase',
+    letterSpacing: '0.1em',
+    px: 1,
+  } as const;
+
+  const cardSx = (active: boolean, opts?: { warn?: boolean; disabled?: boolean; row?: boolean; inactiveBg?: string }) => {
+    const row = opts?.row;
+    const disabled = opts?.disabled;
+    const warn = opts?.warn;
+    const accent = (theme: any) => (warn ? theme.palette.warning.main : theme.palette.primary.main);
+    return {
+      borderRadius: row ? 2 : 1.5,
+      border: 1,
+      ...(row ? { px: 2, py: 1.5 } : { p: 1.5 }),
+      display: 'flex',
+      flexDirection: (row ? 'row' : 'column') as 'row' | 'column',
+      alignItems: (row ? 'center' : 'flex-start') as 'center' | 'flex-start',
+      justifyContent: row ? 'space-between' : undefined,
+      gap: row ? 1 : 0.5,
+      textAlign: 'left' as const,
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      transition: 'all 0.2s',
+      opacity: disabled ? 0.5 : 1,
+      bgcolor: (theme: any) => active ? alpha(accent(theme), 0.1) : (opts?.inactiveBg || theme.palette.background.paper),
+      borderColor: (theme: any) => active ? accent(theme) : theme.palette.divider,
+      color: (theme: any) => active ? accent(theme) : theme.palette.text.secondary,
+      '&:hover': disabled ? {} : {
+        borderColor: (theme: any) => active ? accent(theme) : alpha(accent(theme), 0.6),
+        bgcolor: (theme: any) => active ? alpha(accent(theme), 0.1) : (opts?.inactiveBg || 'action.hover'),
+        color: (theme: any) => active ? accent(theme) : theme.palette.text.primary,
+      },
+    };
+  };
+
   return (
-    <form id="rule-form" onSubmit={handleSubmit} className="space-y-4 text-text-primary px-1 pb-2">
-      {/* Basic Info Container */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1 flex items-center gap-1.5">
-            <Zap size={10} className="text-accent" /> {t('rules.form.name')}
-          </label>
-          <input 
-            type="text" 
+    <Box component="form" id="rule-form" onSubmit={handleSubmit} sx={{ display: 'flex', flexDirection: 'column', gap: 2, color: 'text.primary', px: 1, pb: 1 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+          <Typography variant="caption" sx={{ ...sectionLabelSx, display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <Box component="span" sx={{ display: 'inline-flex', color: 'primary.main' }}><Bolt size={10} /></Box>
+            {t('rules.form.name')}
+          </Typography>
+          <TextField
+            type="text"
             required
+            size="small"
             value={formData.name}
-            onChange={(e) => setFormData({...formData, name: e.target.value})}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
             placeholder={t('rules.form.name_placeholder')}
-            className="w-full bg-background-hover border border-border px-4 py-2 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none font-medium transition-all"
+            sx={inputSx}
           />
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1 flex items-center gap-1.5">
-             <Settings size={10} className="text-accent" /> {t('rules.form.website')}
-          </label>
-          <input 
-            type="text" 
+        </Box>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+          <Typography variant="caption" sx={{ ...sectionLabelSx, display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <Box component="span" sx={{ display: 'inline-flex', color: 'primary.main' }}><Settings size={10} /></Box>
+            {t('rules.form.website')}
+          </Typography>
+          <TextField
+            type="text"
+            size="small"
             value={formData.website}
-            onChange={(e) => setFormData({...formData, website: e.target.value})}
-            placeholder="google"
-            className="w-full bg-background-hover border border-border px-4 py-2 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none font-medium transition-all"
+            onChange={(e) => setFormData({ ...formData, website: e.target.value })}
+            placeholder={t('rules.form.website_placeholder')}
+            sx={inputSx}
           />
-        </div>
-      </div>
+        </Box>
+      </Box>
 
-      {/* Mode Selection Grid */}
-      <div className="space-y-3">
-          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1">{t('rules.form.mode')}</label>
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-              {MODES.map((m) => (
-                  <div 
-                    key={m.id}
-                    onClick={() => setFormData({...formData, mode: m.id})}
-                    className={`p-3 rounded-2xl border transition-all cursor-pointer flex flex-col gap-1 items-start relative overflow-hidden group ${
-                        formData.mode === m.id 
-                        ? "bg-accent/10 border-accent shadow-sm" 
-                        : "bg-background-card border-border/50 hover:border-accent/40"
-                    }`}
-                  >
-                        <div className="flex items-center gap-2 z-10">
-                            <div className={formData.mode === m.id ? "text-accent" : "text-text-muted"}>{m.icon}</div>
-                            <span className={`text-[12px] font-black ${formData.mode === m.id ? "text-accent" : "text-text-primary"}`}>{m.label}</span>
-                        </div>
-                        <span className="text-[9px] text-text-muted font-medium leading-tight z-10">{m.desc}</span>
-                        {formData.mode === m.id && <div className="absolute -right-2 -bottom-2 opacity-10 text-accent transform rotate-12">{m.icon}</div>}
-                  </div>
-              ))}
-          </div>
-      </div>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        <Typography variant="caption" sx={sectionLabelSx}>{t('rules.form.mode')}</Typography>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', lg: 'repeat(3, 1fr)' }, gap: 1.5 }}>
+          {MODES.map((m) => {
+            const active = formData.mode === m.id;
+            return (
+              <Box key={m.id} onClick={() => setFormData({ ...formData, mode: m.id })} sx={{ position: 'relative', overflow: 'hidden', ...cardSx(active) }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Box component="span" sx={{ display: 'inline-flex', color: active ? 'primary.main' : 'text.secondary' }}>{m.icon}</Box>
+                  <Typography variant="caption" sx={{ fontSize: 12, fontWeight: 900, color: active ? 'primary.main' : 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{m.label}</Typography>
+                </Box>
+                <Typography variant="caption" sx={{ fontSize: 9, color: 'text.secondary', fontWeight: 'medium', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>{m.desc}</Typography>
+                {active && (
+                  <Box component="span" sx={{ position: 'absolute', right: -8, bottom: -8, opacity: 0.1, color: 'primary.main', transform: 'rotate(12deg)', display: 'inline-flex' }}>{m.icon}</Box>
+                )}
+              </Box>
+            );
+          })}
+        </Box>
+      </Box>
 
-      {/* Domain List Management */}
-      <div className="space-y-3">
-          <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1">{t('rules.form.domains')}</label>
-          <div className="relative group">
-              <input 
-                type="text" 
-                value={domainInput}
-                onChange={(e) => setDomainInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddDomain())}
-                placeholder={t('rules.form.domain_placeholder')}
-                className="w-full bg-background-hover border border-border px-4 py-2 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none font-medium pr-12 transition-all placeholder:text-text-muted/40"
-              />
-              <button 
-                type="button"
-                onClick={handleAddDomain}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg bg-accent text-white shadow-lg shadow-accent/20 hover:scale-105 active:scale-95 transition-all"
-              >
-                <Plus size={20} />
-              </button>
-          </div>
-          <div className="flex flex-wrap gap-2 max-h-[120px] overflow-y-auto p-3 bg-background-card border border-border/40 rounded-2xl custom-scrollbar">
-              {(!formData.domains || formData.domains.length === 0) ? (
-                  <span className="text-[11px] text-text-muted italic px-2">{t('rules.form.no_domains')}</span>
-              ) : (
-                  formData.domains.map((d: any, i: number) => (
-                      <div key={i} className="flex items-center gap-1.5 px-3 py-1 bg-background-card border border-border rounded-full text-[11px] font-bold group hover:border-danger/40 transition-all shadow-sm">
-                          {d}
-                          <button 
-                            type="button" 
-                            onClick={() => handleRemoveDomain(i)}
-                            className="text-text-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                              <Trash2 size={12} />
-                          </button>
-                      </div>
-                  ))
-              )}
-          </div>
-      </div>
-
-      {/* Advanced Settings Toggle */}
-      <div className="pt-2">
-          <button 
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        <Typography variant="caption" sx={sectionLabelSx}>{t('rules.form.domains')}</Typography>
+        <Box sx={{ position: 'relative' }}>
+          <TextField
+            type="text"
+            size="small"
+            value={domainInput}
+            onChange={(e) => setDomainInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddDomain())}
+            placeholder={t('rules.form.domain_placeholder')}
+            fullWidth
+            sx={{ '& .MuiOutlinedInput-root': { ...inputRootSx, pr: 6 } }}
+          />
+          <IconButton
             type="button"
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-2 text-accent text-xs font-black uppercase tracking-[0.15em] hover:opacity-80 transition-opacity"
+            size="small"
+            onClick={handleAddDomain}
+            aria-label={t('rules.form.add_domain')}
+            sx={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', bgcolor: 'primary.main', color: 'primary.contrastText', boxShadow: 3, p: 1, '&:hover': { bgcolor: 'primary.dark' } }}
           >
-            {showAdvanced ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-            {showAdvanced ? t('rules.form.advanced_hide') : t('rules.form.advanced_show')}
-          </button>
-      </div>
+            <Plus size={20} />
+          </IconButton>
+        </Box>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, maxHeight: 120, overflowY: 'auto', p: 1.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2 }}>
+          {(!formData.domains || formData.domains.length === 0) ? (
+            <Typography variant="caption" sx={{ fontSize: 11, color: 'text.secondary', fontStyle: 'italic', px: 1 }}>{t('rules.form.no_domains')}</Typography>
+          ) : (
+            formData.domains.map((d: any, i: number) => (
+              <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1.25, py: 0.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: '999px', boxShadow: 1, transition: 'all 0.2s', '&:hover': { borderColor: 'error.main' } }}>
+                <Typography variant="caption" sx={{ fontSize: 11, fontWeight: 'bold' }}>{d}</Typography>
+                <IconButton type="button" size="small" onClick={() => handleRemoveDomain(i)} aria-label={t('rules.form.remove_domain')} sx={{ p: 0.25, color: 'text.secondary', '&:hover': { color: 'error.main' } }}>
+                  <Delete size={12} />
+                </IconButton>
+              </Box>
+            ))
+          )}
+        </Box>
+      </Box>
+
+      <Box sx={{ pt: 1 }}>
+        <Button
+          type="button"
+          variant="text"
+          size="small"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          sx={{ color: 'primary.main', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.15em', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: 1, '&:hover': { opacity: 0.8 } }}
+        >
+          {showAdvanced ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          {showAdvanced ? t('rules.form.advanced_hide') : t('rules.form.advanced_show')}
+        </Button>
+      </Box>
 
       {showAdvanced && (
-          <div className="space-y-6 pt-2 animate-in slide-in-from-top-2 fade-in duration-300">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1">{t('rules.form.upstream')}</label>
-                    <input 
-                        type="text" 
-                        value={formData.upstream}
-                        onChange={(e) => setFormData({...formData, upstream: e.target.value})}
-                        placeholder={t('rules.form.upstream_placeholder')}
-                        className="w-full bg-background-hover border border-border px-4 py-2 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none font-medium"
-                    />
-                </div>
-                <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1">{t('rules.form.dns_policy')}</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {DNS_OPTIONS.map((option) => {
-                        const active = String(formData.dns_mode || '') === option.id;
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, pt: 1 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+              <Typography variant="caption" sx={sectionLabelSx}>{t('rules.form.upstream')}</Typography>
+              <TextField
+                type="text"
+                size="small"
+                value={formData.upstream}
+                onChange={(e) => setFormData({ ...formData, upstream: e.target.value })}
+                placeholder={t('rules.form.upstream_placeholder')}
+                sx={inputSx}
+              />
+            </Box>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+              <Typography variant="caption" sx={sectionLabelSx}>{t('rules.form.dns_policy')}</Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
+                {DNS_OPTIONS.map((option) => {
+                  const active = String(formData.dns_mode || '') === option.id;
+                  const needsIPv6 = ipv6Option(option.id);
+                  const warnIPv6 = needsIPv6 && !ipv6Available;
+                  return (
+                    <Box key={option.id || 'default'} onClick={() => setFormData({ ...formData, dns_mode: option.id })} sx={cardSx(active, { warn: warnIPv6 })}>
+                      <Typography variant="caption" sx={{ fontWeight: 900, letterSpacing: '0.05em' }}>{option.label}</Typography>
+                      <Typography variant="caption" sx={{ fontSize: 10, lineHeight: 1.6, opacity: 0.8 }}>{warnIPv6 ? t('network.ipv6_only_will_fail') : option.desc}</Typography>
+                    </Box>
+                  );
+                })}
+              </Box>
+            </Box>
+          </Box>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+            <Typography variant="caption" sx={sectionLabelSx}>{t('rules.form.process')}</Typography>
+            <TextField
+              type="text"
+              size="small"
+              value={formData.process || ''}
+              onChange={(e) => setFormData({ ...formData, process: e.target.value })}
+              placeholder={t('rules.form.process_placeholder')}
+              sx={inputSx}
+            />
+            <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary', lineHeight: 1.5 }}>{t('rules.form.process_hint')}</Typography>
+          </Box>
+
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 3 }}>
+            {showSniFake && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                <Typography variant="caption" sx={sectionLabelSx}>{t('dns.sni_fake')}</Typography>
+                <TextField
+                  type="text"
+                  size="small"
+                  value={formData.sni_fake}
+                  onChange={(e) => setFormData({ ...formData, sni_fake: e.target.value })}
+                  placeholder={t('rules.form.placeholder_mapped')}
+                  sx={inputSx}
+                />
+              </Box>
+            )}
+            {showEchConfig && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                <Typography variant="caption" sx={sectionLabelSx}>{t('proxies.ech_management')}</Typography>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <Box onClick={() => setFormData({ ...formData, ech_profile_id: '' })} sx={cardSx(!formData.ech_profile_id)}>
+                    <Typography variant="caption" sx={{ fontWeight: 900, letterSpacing: '0.05em' }}>{t('rules.form.ech_auto')}</Typography>
+                    <Typography variant="caption" sx={{ fontSize: 10, opacity: 0.8 }}>{t('rules.form.ech_auto_hint')}</Typography>
+                  </Box>
+                  {echProfiles.length > 0 && (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 176, overflowY: 'auto', pr: 0.5 }}>
+                      {echProfiles.map((p) => {
+                        const active = formData.ech_profile_id === p.id;
                         return (
-                          <button
-                            key={option.id || 'default'}
-                            type="button"
-                            onClick={() => setFormData({ ...formData, dns_mode: option.id })}
-                            className={`rounded-xl border px-3 py-3 text-left transition-all ${
-                              active
-                                ? 'border-accent/40 bg-accent/10 text-accent shadow-[inset_0_0_0_1px_rgba(47,129,247,0.14)]'
-                                : 'border-border/40 bg-background-card text-text-secondary hover:border-accent/30 hover:text-text-primary'
-                            }`}
-                          >
-                            <div className="text-[11px] font-black tracking-wide">{option.label}</div>
-                            <div className="mt-1 text-[10px] leading-relaxed opacity-80">{option.desc}</div>
-                          </button>
+                          <Box key={p.id} onClick={() => setFormData({ ...formData, ech_profile_id: p.id })} sx={cardSx(active)}>
+                            <Typography variant="caption" sx={{ fontWeight: 900, letterSpacing: '0.05em' }}>{p.name}</Typography>
+                            <Typography variant="caption" sx={{ fontSize: 10, opacity: 0.8 }}>{p.discovery_domain || t('rules.form.manual_ech')}</Typography>
+                          </Box>
                         );
                       })}
-                    </div>
-                </div>
-              </div>
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            )}
+            {showNat64Config && formData.nat64_enabled && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75, mt: 2 }}>
+                <Typography variant="caption" sx={sectionLabelSx}>{t('rules.form.nat64_profile')}</Typography>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {nat64Profiles.length === 0 ? (
+                    <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary', fontWeight: 'bold', px: 1 }}>
+                      {t('proxies.no_nat64')}
+                    </Typography>
+                  ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, maxHeight: 176, overflowY: 'auto', pr: 0.5 }}>
+                      {nat64Profiles.map((p) => {
+                        const active = formData.nat64_profile_id === p.id;
+                        const warnIPv6 = !ipv6Available;
+                        return (
+                          <Box key={p.id} onClick={() => setFormData({ ...formData, nat64_profile_id: p.id })} sx={cardSx(active, { warn: warnIPv6 })}>
+                            <Typography variant="caption" sx={{ fontWeight: 900, letterSpacing: '0.05em' }}>{p.name}</Typography>
+                            <Typography variant="caption" sx={{ fontSize: 10, opacity: 0.8 }}>{t('rules.form.prefix_label', { prefix: p.prefix })}</Typography>
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            )}
+          </Box>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {showSniFake && (
-                  <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1">{t('dns.sni_fake')}</label>
-                      <input 
-                          type="text" 
-                          value={formData.sni_fake}
-                          onChange={(e) => setFormData({...formData, sni_fake: e.target.value})}
-                          placeholder="例如: github-com.mapped"
-                          className="w-full bg-background-hover border border-border px-4 py-2 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none font-medium"
-                      />
-                  </div>
-                )}
-                {showEchConfig && (
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-text-secondary uppercase tracking-widest px-1">{t('proxies.ech_management')}</label>
-                    <div className="space-y-2">
-                      <button
-                        type="button"
-                        onClick={() => setFormData({ ...formData, ech_profile_id: '' })}
-                        className={`w-full rounded-xl border px-4 py-3 text-left transition-all ${
-                          !formData.ech_profile_id
-                            ? 'border-accent/40 bg-accent/10 text-accent shadow-[inset_0_0_0_1px_rgba(47,129,247,0.14)]'
-                            : 'border-border/40 bg-background-card text-text-secondary hover:border-accent/30 hover:text-text-primary'
-                        }`}
-                      >
-                        <div className="text-[11px] font-black tracking-wide">{t('rules.form.ech_auto')}</div>
-                        <div className="mt-1 text-[10px] opacity-80">{t('rules.form.ech_auto_hint')}</div>
-                      </button>
-                      {echProfiles.length > 0 && (
-                        <div className="grid grid-cols-1 gap-2 max-h-44 overflow-y-auto pr-1">
-                          {echProfiles.map((p) => {
-                            const active = formData.ech_profile_id === p.id;
-                            return (
-                              <button
-                                key={p.id}
-                                type="button"
-                                onClick={() => setFormData({ ...formData, ech_profile_id: p.id })}
-                                className={`rounded-xl border px-4 py-3 text-left transition-all ${
-                                  active
-                                    ? 'border-accent/40 bg-accent/10 text-accent shadow-[inset_0_0_0_1px_rgba(47,129,247,0.14)]'
-                                    : 'border-border/40 bg-background-card text-text-secondary hover:border-accent/30 hover:text-text-primary'
-                                }`}
-                              >
-                                <div className="text-[11px] font-black tracking-wide">{p.name}</div>
-                                <div className="mt-1 text-[10px] opacity-80">{p.discovery_domain || '手动配置 ECH'}</div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5, p: 2, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2 }}>
+            <Box onClick={() => toggleBooleanField('enabled')} sx={cardSx(formData.enabled, { row: true, inactiveBg: 'action.hover' })}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>{t('rules.form.enable_rule')}</Typography>
+                <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>{t('rules.form.enable_hint')}</Typography>
+              </Box>
+              <Switch size="small" checked={Boolean(formData.enabled)} />
+            </Box>
+            {showEchConfig && (
+              <Box onClick={() => toggleBooleanField('ech_enabled')} sx={cardSx(formData.ech_enabled, { row: true, inactiveBg: 'action.hover' })}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', display: 'flex', alignItems: 'center', gap: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>
+                    <Box component="span" sx={{ display: 'inline-flex', color: '#06b6d4' }}><Lock size={12} /></Box>
+                    {t('rules.form.ech_enable')}
+                  </Typography>
+                  <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>{t('rules.form.ech_hint')}</Typography>
+                </Box>
+                <Switch size="small" checked={Boolean(formData.ech_enabled)} />
+              </Box>
+            )}
+            {showNat64Config && (
+              <Box onClick={() => toggleBooleanField('nat64_enabled')} sx={cardSx(formData.nat64_enabled, { row: true, inactiveBg: 'action.hover', warn: !ipv6Available })}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', display: 'flex', alignItems: 'center', gap: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>
+                    <Box component="span" sx={{ display: 'inline-flex', color: 'secondary.main' }}><Globe size={12} /></Box>
+                    {t('rules.form.nat64_enable')}
+                  </Typography>
+                  <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>{!ipv6Available ? t('network.ipv6_nat64_will_fail') : t('rules.form.nat64_hint')}</Typography>
+                </Box>
+                <Switch size="small" checked={Boolean(formData.nat64_enabled)} />
+              </Box>
+            )}
+            {showCfPool && (
+              <Box onClick={() => toggleBooleanField('use_cf_pool')} sx={cardSx(formData.use_cf_pool, { row: true, inactiveBg: 'action.hover' })}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>{t('rules.form.cf_pool')}</Typography>
+                  <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>{t('rules.form.cf_pool_hint')}</Typography>
+                </Box>
+                <Switch size="small" checked={Boolean(formData.use_cf_pool)} />
+              </Box>
+            )}
+          </Box>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-4 bg-background-card border border-border/40 rounded-2xl">
-                  <button
-                    type="button"
-                    onClick={() => toggleBooleanField('enabled')}
-                    className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition-all ${
-                      formData.enabled
-                        ? 'border-accent/40 bg-accent/10'
-                        : 'border-border/40 bg-background-hover/60 hover:border-accent/25'
-                    }`}
-                  >
-                    <div className="space-y-0.5">
-                      <div className="text-[11px] font-bold text-text-primary">{t('rules.form.enable_rule')}</div>
-                      <div className="text-[10px] text-text-muted">{t('rules.form.enable_hint')}</div>
-                    </div>
-                    <div className={`relative h-5 w-9 rounded-full transition-all ${formData.enabled ? 'bg-accent' : 'bg-background-hover border border-border/50'}`}>
-                      <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${formData.enabled ? 'left-0 translate-x-[18px]' : 'left-0.5'}`} />
-                    </div>
-                  </button>
-                  {showEchConfig && (
-                    <button
-                      type="button"
-                      onClick={() => toggleBooleanField('ech_enabled')}
-                      className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition-all ${
-                        formData.ech_enabled
-                          ? 'border-accent/40 bg-accent/10'
-                          : 'border-border/40 bg-background-hover/60 hover:border-accent/25'
-                      }`}
+          {showCfPool && ipPools.length > 0 && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2 }}>
+              <Typography variant="caption" sx={{ fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'text.secondary', px: 1 }}>
+                {t('rules.form.ip_pool_select')}
+              </Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1 }}>
+                {ipPools.map((pool: any) => {
+                  const active = formData.ip_pool === pool.name;
+                  return (
+                    <Box
+                      key={pool.name}
+                      onClick={() => setFormData({ ...formData, ip_pool: active ? '' : pool.name })}
+                      sx={cardSx(active, { row: true, inactiveBg: 'action.hover' })}
                     >
-                      <div className="space-y-0.5">
-                        <div className="text-[11px] font-bold text-text-primary flex items-center gap-1">
-                          <Lock size={12} className="text-cyan-500" /> {t('rules.form.ech_enable')}
-                        </div>
-                        <div className="text-[10px] text-text-muted">{t('rules.form.ech_hint')}</div>
-                      </div>
-                      <div className={`relative h-5 w-9 rounded-full transition-all ${formData.ech_enabled ? 'bg-accent' : 'bg-background-hover border border-border/50'}`}>
-                        <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${formData.ech_enabled ? 'left-0 translate-x-[18px]' : 'left-0.5'}`} />
-                      </div>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => toggleBooleanField('use_cf_pool')}
-                    className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition-all ${
-                      formData.use_cf_pool
-                        ? 'border-accent/40 bg-accent/10'
-                        : 'border-border/40 bg-background-hover/60 hover:border-accent/25'
-                    }`}
-                  >
-                    <div className="space-y-0.5">
-                      <div className="text-[11px] font-bold text-text-primary">{t('rules.form.cf_pool')}</div>
-                      <div className="text-[10px] text-text-muted">{t('rules.form.cf_pool_hint')}</div>
-                    </div>
-                    <div className={`relative h-5 w-9 rounded-full transition-all ${formData.use_cf_pool ? 'bg-accent' : 'bg-background-hover border border-border/50'}`}>
-                      <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${formData.use_cf_pool ? 'left-0 translate-x-[18px]' : 'left-0.5'}`} />
-                    </div>
-                  </button>
-              </div>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>
+                          <Box component="span" sx={{ display: 'inline-flex', mr: 0.5, color: 'primary.main' }}><Globe size={12} /></Box>
+                          {pool.name}
+                        </Typography>
+                        <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>
+                          {t('rules.form.ip_pool_count', { count: (pool.preferred_ips || []).length })}
+                        </Typography>
+                      </Box>
+                      <Switch size="small" checked={active} />
+                    </Box>
+                  );
+                })}
+              </Box>
+            </Box>
+          )}
 
-              {/* Advanced Cert Verify */}
-              {showCertVerify && (
-                <div className="space-y-3 p-4 border border-warning bg-background-card rounded-2xl relative">
-                    <div className="flex items-center gap-2 text-warning mb-2">
-                        <AlertCircle size={16} />
-                        <span className="text-xs font-bold uppercase tracking-wider">{t('dns.cert_policy')}</span>
-                    </div>
-                  <div className="space-y-2">
-                    <label className="text-[9px] font-bold text-text-secondary">{t('dns.verify_mode')}</label>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                      {CERT_VERIFY_MODES.map((mode) => {
-                        const active = certVerifyMode === mode.id;
-                        return (
-                          <button
-                            key={mode.id || 'default'}
-                            type="button"
-                            onClick={() => setCertVerify({ mode: mode.id })}
-                            className={`rounded-xl border px-3 py-3 text-left transition-all ${
-                              active
-                                ? 'border-warning bg-warning/10 text-warning shadow-[inset_0_0_0_1px_rgba(210,153,34,0.14)]'
-                                : 'border-border bg-background-hover/60 text-text-secondary hover:border-warning hover:text-text-primary'
-                            }`}
-                          >
-                            <div className="text-[11px] font-black tracking-wide">{mode.label}</div>
-                            <div className="mt-1 text-[10px] leading-relaxed opacity-80">{mode.desc}</div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
+          {showFragment && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, p: 2, border: 1, borderColor: 'divider', bgcolor: 'background.paper', borderRadius: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'primary.main' }}>
+                <Monitor size={16} />
+                <Typography variant="caption" sx={{ fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {t('rules.fragment.title')}
+                </Typography>
+                <Box sx={{ flex: 1 }} />
+                <Button size="small" onClick={resetFragment} sx={{ fontSize: 10 }}>
+                  {t('rules.fragment.reset')}
+                </Button>
+              </Box>
 
-                  <button
-                    type="button"
-                    onClick={() => setCertVerify({ allow_unknown_authority: !formData.cert_verify.allow_unknown_authority })}
-                    className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 transition-all ${
-                      formData.cert_verify.allow_unknown_authority
-                        ? 'border-warning bg-warning/10'
-                        : 'border-border bg-background-hover/60 hover:border-warning'
-                    }`}
-                  >
-                    <div className="space-y-0.5 text-left">
-                      <div className="text-[11px] font-bold text-text-primary">{t('dns.allow_unknown')}</div>
-                      <div className="text-[10px] text-text-muted">仅在你明确知道目标证书来源时启用</div>
-                    </div>
-                    <div className={`relative h-5 w-9 rounded-full transition-all ${formData.cert_verify.allow_unknown_authority ? 'bg-warning' : 'bg-background-hover border border-border/50'}`}>
-                      <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${formData.cert_verify.allow_unknown_authority ? 'left-0 translate-x-[18px]' : 'left-0.5'}`} />
-                    </div>
-                  </button>
+              <Box onClick={() => toggleFragmentField('tcp_only')} sx={cardSx(frag.tcp_only, { row: true, inactiveBg: 'action.hover' })}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', display: 'flex', alignItems: 'center', gap: 0.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>
+                    <Box component="span" sx={{ display: 'inline-flex', color: 'primary.main' }}><Bolt size={12} /></Box>
+                    {t('rules.fragment.tcp_only')}
+                  </Typography>
+                </Box>
+                <Switch size="small" checked={frag.tcp_only} />
+              </Box>
 
-                  {certVerifyMode === 'allow_names' && (
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-text-muted">{t('dns.allow_names')}</label>
-                      <textarea
-                        rows={4}
-                        value={joinListInput(formData.cert_verify.names)}
-                        onChange={(e) => setCertVerify({ names: splitListInput(e.target.value) })}
-                        placeholder="每行一个域名，例如&#10;*.github.com&#10;github.com"
-                        className="w-full resize-none bg-background-card border border-border px-3 py-2 rounded-xl text-[11px] leading-relaxed outline-none focus:ring-2 focus:ring-warning"
-                      />
-                    </div>
-                  )}
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 1.5 }}>
+                <TextField
+                  size="small" fullWidth type="number"
+                  slotProps={{ htmlInput: { min: 1, max: 8 } }}
+                  label={t('rules.fragment.records')}
+                  value={frag.num_records}
+                  onChange={(e) => setFragField('num_records', Number(e.target.value))}
+                />
+                <TextField
+                  size="small" fullWidth type="number"
+                  slotProps={{ htmlInput: { min: 1, max: 16 } }}
+                  label={t('rules.fragment.segments')}
+                  value={frag.num_segments}
+                  onChange={(e) => setFragField('num_segments', Number(e.target.value))}
+                />
+                <TextField
+                  size="small" fullWidth type="number"
+                  slotProps={{ htmlInput: { min: 0, max: 500 } }}
+                  label={t('rules.fragment.interval')}
+                  value={frag.interval_ms}
+                  onChange={(e) => setFragField('interval_ms', Number(e.target.value))}
+                />
+              </Box>
 
-                  {certVerifyMode === 'allow_suffixes' && (
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-text-muted">{t('dns.allow_suffixes')}</label>
-                      <textarea
-                        rows={4}
-                        value={joinListInput(formData.cert_verify.suffixes)}
-                        onChange={(e) => setCertVerify({ suffixes: splitListInput(e.target.value) })}
-                        placeholder="每行一个后缀，例如&#10;.github.com&#10;.cloudfront.net"
-                        className="w-full resize-none bg-background-card border border-border px-3 py-2 rounded-xl text-[11px] leading-relaxed outline-none focus:ring-2 focus:ring-warning"
-                      />
-                    </div>
-                  )}
+              <Box onClick={() => toggleFragmentField('mod_minor_ver')} sx={cardSx(frag.mod_minor_ver, { row: true, inactiveBg: 'action.hover' })}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>
+                    {t('rules.fragment.minorver')}
+                  </Typography>
+                </Box>
+                <Switch size="small" checked={frag.mod_minor_ver} />
+              </Box>
 
-                  {certVerifyMode === 'allow_spki' && (
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold text-text-muted">允许 SPKI SHA256 列表</label>
-                      <textarea
-                        rows={4}
-                        value={joinListInput(formData.cert_verify.spki_sha256)}
-                        onChange={(e) => setCertVerify({ spki_sha256: splitListInput(e.target.value) })}
-                        placeholder="每行一个 Base64 指纹"
-                        className="w-full resize-none bg-background-card border border-border px-3 py-2 rounded-xl text-[11px] leading-relaxed outline-none focus:ring-2 focus:ring-warning font-mono"
-                      />
-                    </div>
-                  )}
-                </div>
+              <Box onClick={() => toggleFragmentField('oob')} sx={cardSx(frag.oob, { row: true, inactiveBg: 'action.hover' })}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>
+                    {t('rules.fragment.oob')}
+                  </Typography>
+                </Box>
+                <Switch size="small" checked={frag.oob} />
+              </Box>
+            </Box>
+          )}
+
+          {showCertVerify && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, p: 2, border: 1, borderColor: 'warning.main', bgcolor: 'background.paper', borderRadius: 2, position: 'relative' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'warning.main', mb: 1 }}>
+                <AlertCircle size={16} />
+                <Typography variant="caption" sx={{ fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('dns.cert_policy')}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Typography variant="caption" sx={{ fontSize: 9, fontWeight: 'bold', color: 'text.secondary' }}>{t('dns.verify_mode')}</Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(3, 1fr)' }, gap: 1 }}>
+                  {CERT_VERIFY_MODES.map((cm) => {
+                    const active = certVerifyMode === cm.id;
+                    return (
+                      <Box key={cm.id || 'default'} onClick={() => setCertVerify({ mode: cm.id })} sx={cardSx(active, { warn: true, inactiveBg: 'action.hover' })}>
+                        <Typography variant="caption" sx={{ fontWeight: 900, letterSpacing: '0.05em' }}>{cm.label}</Typography>
+                        <Typography variant="caption" sx={{ fontSize: 10, lineHeight: 1.6, opacity: 0.8 }}>{cm.desc}</Typography>
+                      </Box>
+                    );
+                  })}
+                </Box>
+              </Box>
+
+              <Box onClick={() => setCertVerify({ allow_unknown_authority: !formData.cert_verify.allow_unknown_authority })} sx={cardSx(Boolean(formData.cert_verify.allow_unknown_authority), { warn: true, row: true, inactiveBg: 'action.hover' })}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 'bold', color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25 }}>{t('dns.allow_unknown')}</Typography>
+                  <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>{t('rules.form.cert_verify_warn')}</Typography>
+                </Box>
+                <Switch size="small" color="warning" checked={Boolean(formData.cert_verify.allow_unknown_authority)} />
+              </Box>
+
+              {certVerifyMode === 'allow_names' && (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                  <Typography variant="caption" sx={{ fontSize: 9, fontWeight: 'bold', color: 'text.secondary' }}>{t('dns.allow_names')}</Typography>
+                  <TextField
+                    multiline
+                    rows={4}
+                    size="small"
+                    value={joinListInput(formData.cert_verify.names)}
+                    onChange={(e) => setCertVerify({ names: splitListInput(e.target.value) })}
+                    placeholder={t('rules.form.placeholder_domains')}
+                    sx={{ ...inputSx, '& textarea': { fontSize: '0.75rem', lineHeight: 1.6, resize: 'none' } }}
+                  />
+                </Box>
               )}
-          </div>
+
+              {certVerifyMode === 'allow_suffixes' && (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                  <Typography variant="caption" sx={{ fontSize: 9, fontWeight: 'bold', color: 'text.secondary' }}>{t('dns.allow_suffixes')}</Typography>
+                  <TextField
+                    multiline
+                    rows={4}
+                    size="small"
+                    value={joinListInput(formData.cert_verify.suffixes)}
+                    onChange={(e) => setCertVerify({ suffixes: splitListInput(e.target.value) })}
+                    placeholder={t('rules.form.placeholder_suffixes')}
+                    sx={{ ...inputSx, '& textarea': { fontSize: '0.75rem', lineHeight: 1.6, resize: 'none' } }}
+                  />
+                </Box>
+              )}
+
+              {certVerifyMode === 'allow_spki' && (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                  <Typography variant="caption" sx={{ fontSize: 9, fontWeight: 'bold', color: 'text.secondary' }}>{t('rules.form.allow_spki_list')}</Typography>
+                  <TextField
+                    multiline
+                    rows={4}
+                    size="small"
+                    value={joinListInput(formData.cert_verify.spki_sha256)}
+                    onChange={(e) => setCertVerify({ spki_sha256: splitListInput(e.target.value) })}
+                    placeholder={t('rules.form.placeholder_spki')}
+                    sx={{ ...inputSx, '& textarea': { fontSize: '0.75rem', lineHeight: 1.6, resize: 'none', } }}
+                  />
+                </Box>
+              )}
+            </Box>
+          )}
+        </Box>
       )}
-    </form>
+    </Box>
   );
 };
 

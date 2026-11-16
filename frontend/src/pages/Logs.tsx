@@ -1,47 +1,61 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, useDeferredValue } from 'react';
 import {
-  FileText, Trash2, Pause, Play, Search, ChevronsUp, Radio
+  FileText, Delete, Pause, Play, Search, ChevronsUp, Antenna, ArrowDown, Download, X, Save
 } from '../lib/icons';
 import {
   ClearLogs, GetRecentLogs, IsLogCaptureEnabled,
-  StartLogCapture, StopLogCapture
+  StartLogCapture, StopLogCapture,
+  PreviewDiagnosticsExport, ExportDiagnostics, RevealDiagnosticsExport
 } from '../api/bindings';
-import { Button } from '../components/ui/Button';
-import { EmptyState } from '../components/ui/EmptyState';
-import { cn } from '../lib/utils';
 import { useTranslation } from '../i18n/I18nContext';
+import { Box, Typography, Button, TextField, InputAdornment, IconButton, Chip } from '@mui/material';
+import { alpha } from '@mui/material/styles';
+import { keyframes } from '@emotion/react';
+import Modal from '../components/Modal';
+import { toast } from '../lib/toast';
 
 const RE_ERROR = /error|failed|panic/i;
 const RE_WARN = /warn/i;
 const RE_LINE_PARSE = /^(\d{4}\/\d{2}\/\d{2}) (\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+(.*)$/;
 
-const parseLine = (text: string) => {
+type Parsed = { date: string; time: string; msg: string; level: 'error' | 'warn' | 'info' };
+
+const parseLine = (text: string): Parsed => {
   const match = text.match(RE_LINE_PARSE);
-  if (!match) return { time: '--:--:--', msg: text };
-  return { time: match[2], msg: match[3] };
+  if (!match) return { date: '', time: '--:--:--', msg: text, level: 'info' };
+  const msg = match[3];
+  const level: Parsed['level'] = RE_ERROR.test(msg) ? 'error' : RE_WARN.test(msg) ? 'warn' : 'info';
+  return { date: match[1], time: match[2], msg, level };
 };
 
+const pulse = keyframes`0%,100%{opacity:1}50%{opacity:0.4}`;
+const bounce = keyframes`0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}`;
+
 const LogLine: React.FC<{ line: string }> = React.memo(({ line }) => {
-  const isError = RE_ERROR.test(line);
-  const isWarn = RE_WARN.test(line);
-  const { time, msg } = parseLine(line);
+  const { time, msg, level } = parseLine(line);
+  const { t } = useTranslation();
+
+  const levelColor = level === 'error' ? 'error.main' : level === 'warn' ? 'warning.main' : 'text.primary';
+  const borderColor = level === 'error' ? 'rgba(239,68,68,0.7)' : level === 'warn' ? 'rgba(245,158,11,0.7)' : 'transparent';
+  const bgColor = level === 'error' ? 'rgba(239,68,68,0.03)' : level === 'warn' ? 'rgba(245,158,11,0.03)' : 'transparent';
+  const badgeBg = level === 'error' ? 'rgba(239,68,68,0.2)' : level === 'warn' ? 'rgba(245,158,11,0.2)' : (theme: any) => alpha(theme.palette.primary.main, 0.1);
+  const badgeColor = level === 'error' ? 'error.main' : level === 'warn' ? 'warning.main' : 'primary.main';
 
   return (
-    <div className={cn(
-      'flex gap-3 px-4 py-1.5 border-b border-border/40 font-mono text-[11px] leading-relaxed group hover:bg-background-hover transition-colors',
-      isError ? 'bg-danger/5 text-danger' : isWarn ? 'bg-warning/5 text-warning' : 'text-text-primary'
-    )}>
-      <span className="shrink-0 text-text-muted font-bold w-[70px]">{time}</span>
-      <div className="flex gap-2 items-start flex-1 overflow-hidden">
-        <span className={cn(
-          'shrink-0 px-1.5 rounded text-[9px] font-black uppercase mt-0.5',
-          isError ? 'bg-danger text-white' : isWarn ? 'bg-warning text-white' : 'bg-accent/20 text-accent'
-        )}>
-          {isError ? 'ERROR' : isWarn ? 'WARN' : 'INFO'}
-        </span>
-        <span className="truncate group-hover:whitespace-normal group-hover:break-all">{msg}</span>
-      </div>
-    </div>
+    <Box sx={{
+      display: 'flex', gap: 1.5, px: 2.5, py: 1, fontSize: '0.75rem', lineHeight: 1.75,
+      borderLeft: 3, borderLeftColor: borderColor, bgcolor: bgColor, color: levelColor,
+      transition: 'background-color 0.15s', '&:hover': { bgcolor: 'action.hover' },
+    }}>
+      <Box component="span" sx={{ flexShrink: 0, color: 'text.secondary', width: 68, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{time}</Box>
+      <Box component="span" sx={{
+        flexShrink: 0, px: 0.75, borderRadius: 0.5, fontSize: '0.625rem', fontWeight: 900, textTransform: 'uppercase',
+        lineHeight: '18px', height: 18, textAlign: 'center', minWidth: 38, bgcolor: badgeBg, color: badgeColor,
+      }}>
+        {level === 'error' ? t('logs.level_error') : level === 'warn' ? t('logs.level_warn') : t('logs.level_info')}
+      </Box>
+      <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', '&:hover': { whiteSpace: 'normal', wordBreak: 'break-all' } }}>{msg}</Box>
+    </Box>
   );
 });
 
@@ -52,12 +66,35 @@ const Logs: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [isTogglingCapture, setIsTogglingCapture] = useState(false);
   const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
+  const [atBottom, setAtBottom] = useState(true);
+  const [newSinceAway, setNewSinceAway] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const prevRef = useRef<string>('');
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    setAtBottom(isAtBottom);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setAtBottom(true);
+    setNewSinceAway(0);
+  }, []);
 
   const fetchLogs = useCallback(async () => {
     const text = await GetRecentLogs(400);
-    setLines(text ? text.split('\n').filter(Boolean) : []);
-  }, []);
+    const key = text || '';
+    if (key === prevRef.current) return;
+    prevRef.current = key;
+    setLines(key ? key.split('\n').filter(Boolean) : []);
+    setNewSinceAway(prev => atBottom ? 0 : prev + 1);
+  }, [atBottom]);
 
   useEffect(() => {
     let mounted = true;
@@ -69,18 +106,20 @@ const Logs: React.FC = () => {
     };
     void init();
     return () => { mounted = false; };
-  }, []);
+  }, [fetchLogs]);
 
   useEffect(() => {
     if (!captureEnabled || isPaused) return;
     void fetchLogs();
     const interval = setInterval(() => void fetchLogs(), 1500);
     return () => clearInterval(interval);
-  }, [captureEnabled, isPaused]);
+  }, [captureEnabled, isPaused, fetchLogs]);
 
   useEffect(() => {
-    if (!isPaused && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [lines, isPaused]);
+    if (!isPaused && atBottom && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [lines, isPaused, atBottom]);
 
   const handleToggleCapture = async () => {
     if (isTogglingCapture) return;
@@ -91,70 +130,264 @@ const Logs: React.FC = () => {
     } finally { setIsTogglingCapture(false); }
   };
 
-  const filteredLines = useMemo(() => lines.filter(l => l.toLowerCase().includes(search.toLowerCase())), [lines, search]);
+  const filteredLines = useMemo(
+    () => lines.filter(l => l.toLowerCase().includes(deferredSearch.toLowerCase())),
+    [lines, deferredSearch]
+  );
 
-  const handleClear = async () => { await ClearLogs(); setLines([]); };
+  const handleClear = async () => { await ClearLogs(); setLines([]); prevRef.current = ''; };
   const handleScrollTop = () => { if (scrollRef.current) scrollRef.current.scrollTop = 0; };
 
+  const handleExport = () => {
+    const content = filteredLines.join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `snishaper-logs-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // ---- Diagnostic export: preview first, then export the sanitized zip ----
+  const [diagPreview, setDiagPreview] = useState<any>(null);
+  const [isDiagOpen, setIsDiagOpen] = useState(false);
+  const [isDiagExporting, setIsDiagExporting] = useState(false);
+
+  const openDiagPreview = async () => {
+    try {
+      const preview = await PreviewDiagnosticsExport();
+      setDiagPreview(preview);
+      setIsDiagOpen(true);
+    } catch {
+      toast.error(t('logs.diag_failed'));
+    }
+  };
+
+  const formatSize = (n: number): string => {
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+  };
+
+  const redactedFieldLabels: Record<string, string> = {
+    api_key: t('logs.diag_redacted_api_key'),
+    url_credentials: t('logs.diag_redacted_url_credentials'),
+    query_token: t('logs.diag_redacted_query_token'),
+    bearer: t('logs.diag_redacted_bearer'),
+  };
+
+  const handleDiagExport = async () => {
+    if (isDiagExporting) return;
+    setIsDiagExporting(true);
+    try {
+      const path = await ExportDiagnostics();
+      setIsDiagOpen(false);
+      if (typeof path === 'string' && path) {
+        RevealDiagnosticsExport(path);
+        toast.success(t('logs.diag_success'), path);
+      } else {
+        toast.error(t('logs.diag_failed'));
+      }
+    } catch {
+      toast.error(t('logs.diag_failed'));
+    }
+    setIsDiagExporting(false);
+  };
+
+  const renderedContent = useMemo(() => {
+    if (!captureEnabled || filteredLines.length === 0) return null;
+    let lastDate = '';
+    const elements: React.ReactNode[] = [];
+    filteredLines.forEach((line, i) => {
+      const { date } = parseLine(line);
+      if (date && date !== lastDate) {
+        lastDate = date;
+        elements.push(
+          <Box key={`d-${date}`} sx={{
+            position: 'sticky', top: 0, zIndex: 10, px: 2.5, py: 0.75, bgcolor: 'background.paper',
+            borderBottom: 1, borderColor: 'divider',
+            fontSize: '0.6875rem', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'text.secondary',
+          }}>
+            {date}
+          </Box>
+        );
+      }
+      elements.push(<LogLine key={`l-${i}`} line={line} />);
+    });
+    return elements;
+  }, [filteredLines, captureEnabled]);
+
   return (
-    <div className="h-full flex flex-col p-6 animate-in fade-in duration-500 overflow-hidden">
-      <header className="flex justify-between items-end mb-6 shrink-0">
-        <h1 className="text-3xl font-black tracking-tighter">{t('logs.title')}</h1>
-        <div className="flex gap-2">
+    <Box sx={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column', pt: 4, px: 3, pb: 0, overflow: 'hidden' }}>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'flex-end' }, gap: 2, mb: 6, flexShrink: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ p: 1.25, borderRadius: 1.5, border: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), borderColor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+            <FileText size={20} />
+          </Box>
+          <Typography variant="h5" sx={{ fontWeight: 700, letterSpacing: '-0.02em' }}>{t('logs.title')}</Typography>
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1 }}>
           <Button onClick={handleToggleCapture} loading={isTogglingCapture}
-            variant={captureEnabled ? 'danger' : 'primary'} size="sm" icon={<Radio size={14} />}>
+            color={captureEnabled ? 'error' : 'primary'} variant="contained" size="small" startIcon={<Antenna size={14} />}>
             {captureEnabled ? t('logs.stop_capture') : t('logs.capture')}
           </Button>
           <Button onClick={() => setIsPaused(!isPaused)} disabled={!captureEnabled}
-            variant={isPaused ? 'primary' : 'ghost'} size="sm" icon={isPaused ? <Play size={14} /> : <Pause size={14} />}>
+            variant={isPaused ? 'contained' : 'outlined'} size="small" startIcon={isPaused ? <Play size={14} /> : <Pause size={14} />}>
             {isPaused ? t('logs.resume') : t('logs.pause')}
           </Button>
-          <Button onClick={handleScrollTop} variant="ghost" size="sm" icon={<ChevronsUp size={14} />}>
+          <Button onClick={handleScrollTop} variant="outlined" size="small" startIcon={<ChevronsUp size={14} />}>
             {t('logs.scroll_top')}
           </Button>
-          <Button onClick={handleClear} variant="ghost" size="sm"
-            className="hover:bg-danger/10 hover:text-danger" icon={<Trash2 size={14} />}>
+          <Button onClick={handleClear} variant="outlined" size="small"
+            sx={{ '&:hover': { bgcolor: 'rgba(239,68,68,0.1)', color: 'error.main' } }} startIcon={<Delete size={14} />}>
             {t('logs.clear')}
           </Button>
-        </div>
-      </header>
+          <Button onClick={handleExport} disabled={!captureEnabled || filteredLines.length === 0}
+            variant="outlined" size="small" startIcon={<Download size={14} />}>
+            {t('logs.export')}
+          </Button>
+          <Button onClick={openDiagPreview} variant="outlined" size="small" startIcon={<Save size={14} />}>
+            {t('logs.diag_button')}
+          </Button>
+        </Box>
+      </Box>
 
-      <div className="mb-4 relative group shrink-0">
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-accent transition-colors" size={16} aria-hidden />
-        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('logs.search_placeholder')}
-          aria-label={t('logs.search_placeholder')}
-          className="w-full bg-background-card border border-border focus:border-accent/30 pl-11 pr-4 py-2.5 rounded-2xl text-xs outline-none transition-all font-medium" />
-      </div>
+      <Box sx={{ mb: 2.5, flexShrink: 0 }}>
+		<TextField
+		  type="text"
+		  value={search}
+		  onChange={(e) => setSearch(e.target.value)}
+		  placeholder={t('logs.search_placeholder')}
+		  aria-label={t('logs.search_placeholder')}
+		  fullWidth
+		  size="small"
+		  slotProps={{
+			input: {
+			  startAdornment: (
+				<InputAdornment position="start">
+				  <Search size={16} aria-hidden />
+				</InputAdornment>
+			  ),
+			  endAdornment: search ? (
+				<InputAdornment position="end">
+				  <IconButton
+					size="small"
+					onClick={() => setSearch('')}
+					aria-label={t('common.clear')}
+					edge="end"
+				  >
+					<X size={14} />
+				  </IconButton>
+				</InputAdornment>
+			  ) : null,
+			},
+		  }}
+		  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: 'background.paper' } }}
+		/>
+      </Box>
 
-      <div ref={scrollRef} className="flex-1 bg-background-card border border-border rounded-2xl overflow-hidden shadow-inner flex flex-col">
-        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      <Box ref={scrollRef} onScroll={handleScroll} sx={{
+        flex: 1, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: '16px 16px 0 0',
+        borderBottom: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative',
+        boxShadow: 'inset 0 2px 4px 0 rgba(0,0,0,0.05)',
+      }}>
+        <Box sx={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
           {!captureEnabled ? (
-            <div className="h-full flex flex-col items-center justify-center text-text-muted opacity-60 px-8 text-center">
-              <Radio size={42} strokeWidth={1.5} aria-hidden />
-              <span className="text-xs mt-4 font-black uppercase tracking-[0.2em]">Capture Disabled</span>
-              <p className="mt-3 text-xs leading-relaxed max-w-md">{t('logs.capture_hint')}</p>
-            </div>
+            <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'text.secondary', opacity: 0.6, px: 4, textAlign: 'center' }}>
+              <Antenna size={42} strokeWidth={1.5} aria-hidden />
+              <Typography variant="caption" sx={{ mt: 2, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', fontSize: '0.75rem' }}>{t('logs.capture_disabled')}</Typography>
+              <Typography variant="caption" sx={{ mt: 1.5, lineHeight: 1.6, maxWidth: 448, display: 'block' }}>{t('logs.capture_hint')}</Typography>
+            </Box>
           ) : filteredLines.length === 0 ? (
-            <EmptyState icon={<FileText size={48} strokeWidth={1} />} title={t('logs.no_logs')} />
+            <Box sx={{ py: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'text.secondary', opacity: 0.5 }}>
+              <FileText size={48} strokeWidth={1} />
+              <Typography variant="body2" sx={{ mt: 1.5 }}>{t('logs.no_logs')}</Typography>
+            </Box>
           ) : (
-            filteredLines.map((line, i) => <LogLine key={i} line={line} />)
+            renderedContent
           )}
-        </div>
+        </Box>
+        {captureEnabled && !atBottom && (
+          <Button
+            onClick={scrollToBottom}
+            variant="contained"
+            color="primary"
+            size="small"
+            sx={{
+              position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20,
+              borderRadius: '999px', fontSize: '0.6875rem', fontWeight: 900, textTransform: 'uppercase',
+              letterSpacing: '0.05em', boxShadow: 8, '&:active': { transform: 'translateX(-50%) scale(0.95)' },
+            }}
+            startIcon={<ArrowDown size={14} />}
+          >
+            {newSinceAway > 0 && (
+              <Box component="span" sx={{ bgcolor: 'rgba(255,255,255,0.2)', px: 0.75, borderRadius: 0.5, fontSize: '0.625rem' }}>+{newSinceAway}</Box>
+            )}
+            {t('logs.latest')}
+          </Button>
+        )}
 
-        <div className="px-6 py-2 bg-background-hover/50 border-t border-border flex justify-between items-center shrink-0">
-          <div className="flex gap-4 text-[9px] font-black uppercase tracking-widest text-text-muted">
-            <div className="flex items-center gap-1">
-              <div className={cn('w-1.5 h-1.5 rounded-full', captureEnabled ? 'bg-success animate-pulse' : 'bg-text-muted/40')} aria-hidden />
-              {captureEnabled ? "CAPTURE ON" : "CAPTURE OFF"}
-            </div>
-            <div>BUFFER: {lines.length} LINES</div>
-          </div>
+        <Box sx={{ px: 3, py: 1.25, bgcolor: 'action.hover', borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+          <Box sx={{ display: 'flex', gap: 2.5, fontSize: '0.625rem', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'text.secondary' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Box sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: captureEnabled ? 'success.main' : 'text.disabled', ...(captureEnabled ? { animation: `${pulse} 1.5s ease-in-out infinite` } : {}) }} aria-hidden />
+              {captureEnabled ? t('logs.capture_on') : t('logs.capture_off')}
+            </Box>
+            <Box>{t('logs.buffer', { count: lines.length })}</Box>
+          </Box>
           {captureEnabled && isPaused && (
-            <div className="text-[9px] font-black text-accent bg-accent/10 px-2 py-0.5 rounded-full animate-bounce">REFRESH PAUSED</div>
+            <Typography variant="caption" sx={{ fontWeight: 900, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), px: 1, py: 0.25, borderRadius: '999px', fontSize: '0.5625rem', animation: `${bounce} 1s ease-in-out infinite` }}>{t('logs.refresh_paused')}</Typography>
           )}
-        </div>
-      </div>
-    </div>
+        </Box>
+      </Box>
+
+      <Modal
+        isOpen={isDiagOpen}
+        onClose={() => setIsDiagOpen(false)}
+        title={t('logs.diag_title')}
+        subtitle={t('logs.diag_hint')}
+        maxWidth="30rem"
+        footer={<>
+          <Button type="button" onClick={() => setIsDiagOpen(false)} variant="outlined" size="small">{t('common.cancel')}</Button>
+          <Button type="button" onClick={handleDiagExport} variant="contained" color="primary" size="small" disabled={isDiagExporting}>
+            {isDiagExporting ? t('logs.diag_exporting') : t('logs.diag_export')}
+          </Button>
+        </>}
+      >
+        {diagPreview && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Box>
+              <Typography variant="caption" sx={{ fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em' }} color="text.secondary">
+                {t('logs.diag_files_title')}
+              </Typography>
+              <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                {(diagPreview.files || []).map((f: any) => (
+                  <Box key={f.name} sx={{ display: 'flex', gap: 1.5, alignItems: 'baseline', fontSize: '0.8rem' }}>
+                    <Box component="span" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>{f.name}</Box>
+                    <Box component="span" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>{formatSize(f.size || 0)}</Box>
+                    <Box component="span" sx={{ color: 'text.secondary', ml: 'auto', textAlign: 'right' }}>{f.description}</Box>
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em' }} color="text.secondary">
+                {t('logs.diag_redacted_title')}
+              </Typography>
+              <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                {(diagPreview.redacted_fields || []).map((k: string) => (
+                  <Chip key={k} size="small" label={redactedFieldLabels[k] || k} variant="outlined" sx={{ height: 22, fontSize: '0.7rem' }} />
+                ))}
+              </Box>
+            </Box>
+          </Box>
+        )}
+      </Modal>
+    </Box>
   );
 };
 

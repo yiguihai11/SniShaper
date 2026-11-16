@@ -4,42 +4,56 @@ import {
   Square,
   Globe,
   Cpu,
-  ShieldCheck,
-  Activity,
-  ArrowUpRight,
-  ArrowDownRight,
-  Zap,
+  Shield,
+  Bolt,
   ShieldAlert,
   Search,
-  Loader2,
   Download,
   Lock
 } from '../lib/icons';
+import { alpha } from '@mui/material/styles';
 import {
   GetProxyMode,
   IsProxyRunning,
   GetSystemProxyStatus,
   GetListenPort,
+  GetPortOccupant,
+  KillPortOccupant,
   GetTUNConfig,
   GetTUNStatus,
+  GetNetworkInterfaces,
+  SetTUNInterface,
   StartProxy,
   StartTUN,
   StopProxy,
   StopTUN,
   EnableSystemProxy,
   DisableSystemProxy,
-  GetStats,
   GetCAInstallStatus,
   OpenCAFile,
   InstallCA,
+  GetLastMigrationReport,
   EventsOn
 } from '../api/bindings';
-import { Card } from '../components/ui/Card';
-import { Button } from '../components/ui/Button';
 import Modal from '../components/Modal';
+import NoticeCenter from '../components/NoticeCenter';
 import { toast } from '../lib/toast';
-import { cn, formatSpeed, extractErrorMessage } from '../lib/utils';
+import { formatSpeed, extractErrorMessage } from '../lib/utils';
 import { useTranslation } from '../i18n/I18nContext';
+import {
+  Box,
+  Typography,
+  Button,
+  Grid,
+  FormControl,
+  Select,
+  MenuItem,
+  ListSubheader,
+  Tooltip,
+  CircularProgress,
+  Alert,
+  AlertTitle,
+} from '@mui/material';
 
 const Dashboard: React.FC = () => {
   const { t } = useTranslation();
@@ -48,23 +62,29 @@ const Dashboard: React.FC = () => {
   const [proxyMode, setProxyMode] = useState('MITM');
   const [port, setPort] = useState(8080);
   const [isOperating, setIsOperating] = useState(false);
+  const operatingRef = useRef(false);
   const [isActive, setIsActive] = useState(true);
   const [isPageVisible, setIsPageVisible] = useState(true);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [tunConfig, setTunConfig] = useState<any>({ mtu: 9000, dns_hijack: true });
+  const [interfaces, setInterfaces] = useState<any[]>([]);
+  const [outboundInterface, setOutboundInterface] = useState('');
+  const [ifaceBusy, setIfaceBusy] = useState(false);
   const [tunStatus, setTunStatus] = useState<any>({
     supported: true, running: false, enabled: false, message: t('common.loading')
   });
   const [isTUNBusy, setIsTUNBusy] = useState(false);
-  const [downSpeed, setDownSpeed] = useState(0);
-  const [upSpeed, setUpSpeed] = useState(0);
   const [caStatus, setCaStatus] = useState<any>({ Installed: false, CertPath: '', Platform: 'windows' });
   const [showCertModal, setShowCertModal] = useState(false);
   const [isInstallingCert, setIsInstallingCert] = useState(false);
+  const [portOccupant, setPortOccupant] = useState<{ port: number; pid: number; name: string } | null>(null);
+  const [showKillDialog, setShowKillDialog] = useState(false);
+  const [migrationReport, setMigrationReport] = useState<any | null>(null);
+  const [migrationDismissed, setMigrationDismissed] = useState(false);
 
   const refresh = async () => {
     try {
-      const [running, sysStatus, mode, p, ca, tunCfg, tunState] = await Promise.all([
+      const [running, sysStatus, m, p, ca, tunCfg, tunState] = await Promise.all([
         IsProxyRunning(),
         GetSystemProxyStatus(),
         GetProxyMode(),
@@ -75,13 +95,14 @@ const Dashboard: React.FC = () => {
       ]);
       setProxyRunning(running);
       setSysProxyEnabled(sysStatus.Enabled);
-      setProxyMode(mode.toUpperCase());
+      setProxyMode(m.toUpperCase());
       setPort(p);
       setCaStatus(ca || { Installed: false });
       const normalizedTunConfig = {
         mtu: Number(tunCfg?.mtu ?? tunCfg?.MTU ?? 9000),
         dns_hijack: Boolean(tunCfg?.dns_hijack ?? tunCfg?.DNSHijack ?? true),
       };
+      setOutboundInterface(String(tunCfg?.interface_name ?? tunCfg?.InterfaceName ?? ''));
       const normalizedTunStatus = {
         supported: Boolean(tunState?.supported ?? tunState?.Supported),
         running: Boolean(tunState?.running ?? tunState?.Running),
@@ -97,12 +118,52 @@ const Dashboard: React.FC = () => {
         setShowCertModal(true);
         sessionStorage.setItem('ca_modal_shown', 'true');
       }
-      return { running, sysStatus, mode, port: p, ca, tunCfg: normalizedTunConfig, tunState: normalizedTunStatus };
     } catch (e) {
       console.error("Dashboard refresh error:", e);
-      return null;
     }
   };
+
+  const loadInterfaces = async () => {
+    try {
+      const list = await GetNetworkInterfaces();
+      setInterfaces(Array.isArray(list) ? list : []);
+    } catch (e) {
+      console.error("Failed to load network interfaces:", e);
+    }
+  };
+
+  const handleInterfaceChange = async (name: string) => {
+    if (ifaceBusy || name === outboundInterface) return;
+    setIfaceBusy(true);
+    const previous = outboundInterface;
+    setOutboundInterface(name);
+    try {
+      await SetTUNInterface(name);
+      toast.success(t('dashboard.outbound_interface_applied'), name || t('dashboard.outbound_interface_smart'));
+      await loadInterfaces();
+      await refresh();
+    } catch (err) {
+      setOutboundInterface(previous);
+      toast.error(t('dashboard.outbound_interface_failed'), extractErrorMessage(err));
+    } finally {
+      setIfaceBusy(false);
+    }
+  };
+
+  const ifaceLabel = (iface: any) => {
+    const addresses = Array.isArray(iface?.addresses) ? iface.addresses : [];
+    const tags = [];
+    if (iface?.virtual) tags.push(t('dashboard.outbound_interface_virtual'));
+    if (iface?.own_tunnel) tags.push(t('dashboard.outbound_interface_own'));
+    if (iface?.default_route) tags.push(t('dashboard.outbound_interface_default'));
+    const suffix = tags.length ? ` · ${tags.join('/')}` : '';
+    const address = addresses.length ? ` · ${addresses[0]}` : '';
+    return `${iface?.name ?? ''}${address}${suffix}`;
+  };
+
+  const physicalInterfaces = interfaces.filter((iface: any) => !iface?.virtual && !iface?.own_tunnel);
+  const virtualInterfaces = interfaces.filter((iface: any) => iface?.virtual && !iface?.own_tunnel);
+  const ownInterfaces = interfaces.filter((iface: any) => iface?.own_tunnel);
 
   useEffect(() => {
     const resetInactivityTimer = () => {
@@ -116,52 +177,119 @@ const Dashboard: React.FC = () => {
     const handleVisibilityChange = () => setIsPageVisible(!document.hidden);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     resetInactivityTimer();
-    const unoff = EventsOn("app:traffic", (data: any) => {
-      if (data) { setDownSpeed(data.down || 0); setUpSpeed(data.up || 0); }
-    });
     return () => {
       window.removeEventListener('mousemove', resetInactivityTimer);
       window.removeEventListener('keydown', resetInactivityTimer);
       window.removeEventListener('click', resetInactivityTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-      unoff();
     };
   }, []);
 
   useEffect(() => {
     refresh();
+    loadInterfaces();
+    // One-shot: surface the startup config-migration report (if anything happened).
+    GetLastMigrationReport()
+      .then((report: any) => setMigrationReport(report || null))
+      .catch(() => {});
     const getInterval = () => {
       if (!isPageVisible) return 60000;
       if (!isActive) return 30000;
       return 5000;
     };
     const timer = setInterval(refresh, getInterval());
-    return () => clearInterval(timer);
+
+    const unlisten = EventsOn("app:state_changed", (state: any) => {
+      if (!state) return;
+      if (typeof state.proxyRunning === 'boolean') setProxyRunning(state.proxyRunning);
+      if (typeof state.systemProxyActive === 'boolean') setSysProxyEnabled(state.systemProxyActive);
+      if (typeof state.proxyMode === 'string') setProxyMode(state.proxyMode.toUpperCase());
+      if (typeof state.tunRunning === 'boolean') {
+        setTunStatus((prev: any) => ({ ...prev, running: state.tunRunning, enabled: state.tunRunning }));
+        if (state.tunRunning) setIsTUNBusy(false);
+        loadInterfaces();
+      }
+      if (typeof state.tunMessage === 'string') {
+        setTunStatus((prev: any) => ({ ...prev, message: state.tunMessage }));
+        if (!state.tunRunning && state.tunMessage && state.tunMessage !== 'TUN is not running') {
+          setIsTUNBusy(false);
+          toast.error(t('dashboard.notifications.tun_failed'), state.tunMessage);
+        }
+      }
+      setTimeout(refresh, 50);
+    });
+
+    return () => {
+      clearInterval(timer);
+      if (unlisten) unlisten();
+    };
   }, [isActive, isPageVisible]);
 
   const handleToggleProxy = async () => {
-    if (isOperating) return;
+    if (operatingRef.current) return;
+    operatingRef.current = true;
     setIsOperating(true);
     try {
       if (proxyRunning) await StopProxy();
       else await StartProxy();
-      await new Promise(r => setTimeout(r, 600));
-      await refresh();
-    } catch (err) { console.error("Failed to toggle proxy:", err);
-    } finally { setIsOperating(false); }
+    } catch (err) {
+      const msg = extractErrorMessage(err);
+      console.error("[UI] Failed to toggle proxy:", err);
+      if (!proxyRunning && /Only one usage|address already in use|occupied|forbidden by its access permissions|permission denied|access denied/i.test(msg)) {
+        try {
+          const occupant = await GetPortOccupant(port);
+          if (occupant) {
+            setPortOccupant(occupant);
+            setShowKillDialog(true);
+            refresh();
+            return;
+          }
+        } catch { /* ignore */ }
+      }
+      toast.error(t('dashboard.notifications.proxy_toggle_failed'), msg);
+    } finally {
+      refresh();
+      operatingRef.current = false;
+      setIsOperating(false);
+    }
+  };
+
+  const handleKillAndRetry = async () => {
+    if (!portOccupant) return;
+    setShowKillDialog(false);
+    operatingRef.current = true;
+    setIsOperating(true);
+    try {
+      await KillPortOccupant(port, portOccupant.pid);
+      await new Promise(r => setTimeout(r, 400));
+      await StartProxy();
+    } catch (err) {
+      console.error("[UI] Failed to kill and restart proxy:", err);
+      toast.error(t('dashboard.notifications.kill_process_failed'), extractErrorMessage(err));
+    } finally {
+      setPortOccupant(null);
+      refresh();
+      operatingRef.current = false;
+      setIsOperating(false);
+    }
   };
 
   const handleToggleSysProxy = async () => {
-    if (isOperating) return;
+    if (operatingRef.current) return;
+    operatingRef.current = true;
     setIsOperating(true);
     try {
       if (sysProxyEnabled) await DisableSystemProxy();
       else await EnableSystemProxy();
-      await new Promise(r => setTimeout(r, 800));
-      await refresh();
-    } catch (err) { console.error("Failed to toggle system proxy:", err);
-    } finally { setIsOperating(false); }
+    } catch (err) {
+      console.error("[UI] Failed to toggle system proxy:", err);
+      toast.error(t('dashboard.notifications.sys_proxy_failed'), extractErrorMessage(err));
+    } finally {
+      refresh();
+      operatingRef.current = false;
+      setIsOperating(false);
+    }
   };
 
   const handleToggleTUN = async () => {
@@ -169,20 +297,43 @@ const Dashboard: React.FC = () => {
     setIsTUNBusy(true);
     const nextEnabled = !tunStatus.running;
     try {
-      if (nextEnabled) await StartTUN();
-      else await StopTUN();
-      await new Promise(r => setTimeout(r, nextEnabled ? 1200 : 500));
-      const state = await refresh();
-      const running = Boolean(state?.tunState?.running);
-      if (nextEnabled && !running) {
-        toast.error(t('dashboard.notifications.tun_not_running'), String(state?.tunState?.message || 'TUN 配置已启用，但运行状态仍为关闭。'));
-        return;
+      if (nextEnabled) {
+        await StartTUN();
+        toast.success(t('dashboard.notifications.tun_updated'), t('dashboard.notifications.tun_starting'));
+        const started = await waitForTUNState(true);
+        if (!started) {
+          toast.error(t('dashboard.notifications.tun_failed'), t('dashboard.notifications.tun_timeout'));
+        }
+      } else {
+        await StopTUN();
+        toast.success(t('dashboard.notifications.tun_updated'), t('dashboard.notifications.tun_stopped'));
+        await waitForTUNState(false);
       }
-      toast.success(t('dashboard.notifications.tun_updated'), nextEnabled ? 'TUN 已进入运行态。' : '已关闭 TUN 路径。');
     } catch (err) {
-      await refresh();
       toast.error(t('dashboard.notifications.tun_failed'), extractErrorMessage(err));
-    } finally { setIsTUNBusy(false); }
+    } finally {
+      await refresh();
+      setIsTUNBusy(false);
+    }
+  };
+
+  // 轮询 TUN 实际状态。core 侧启动/停止是异步的（IPC 立即返回），
+  // 这里必须等到真实状态翻转才算完成，否则按钮会永久停在 busy。
+  // 采用递增间隔，避免在 core 正忙于建/删路由时叠加请求压力。
+  const waitForTUNState = async (wantRunning: boolean, timeoutMs = 60000) => {
+    const deadline = Date.now() + timeoutMs;
+    let delay = 300;
+    while (Date.now() < deadline) {
+      try {
+        const state = await GetTUNStatus();
+        if (Boolean(state?.running ?? state?.Running) === wantRunning) return true;
+      } catch {
+        return false;
+      }
+      await new Promise(r => setTimeout(r, delay));
+      delay = Math.min(delay + 200, 1500);
+    }
+    return false;
   };
 
   const handleInstallCA = async () => {
@@ -193,32 +344,43 @@ const Dashboard: React.FC = () => {
       const ca = await GetCAInstallStatus();
       setCaStatus(ca || { Installed: false });
       if (ca?.Installed) setShowCertModal(false);
-    } catch (err) { console.error("Failed to install CA:", err);
-    } finally { setIsInstallingCert(false); }
+    } catch (err) {
+      console.error("Failed to install CA:", err);
+    } finally {
+      setIsInstallingCert(false);
+    }
   };
 
   return (
-    <div className="px-6 pt-10 pb-6 max-w-5xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 mb-6">
-        <div>
-          <h1 className="text-3xl font-black tracking-tighter">{t('dashboard.title')}</h1>
-        </div>
-        <div className="flex flex-wrap gap-2">
+    <Box sx={{ flexGrow: 1, minHeight: 0, width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Box sx={{ pt: 4, flexShrink: 0, display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'flex-end' }, gap: 2, mb: 6 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ p: 1.25, borderRadius: 1.5, border: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), borderColor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+            <Cpu size={20} />
+          </Box>
+          <Typography variant="h5" sx={{ fontWeight: 700, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+          {t('dashboard.title')}
+        </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
           <Button
+            data-tut="proxy-toggle"
             onClick={handleToggleProxy}
             loading={isOperating}
-            variant={proxyRunning ? 'danger' : 'primary'}
-            size="sm"
-            icon={isOperating ? undefined : (proxyRunning ? <Square size={16} fill="white" /> : <Play size={16} fill="white" />)}
+            color={proxyRunning ? 'error' : 'primary'}
+            size="small"
+            startIcon={!isOperating && (proxyRunning ? <Square size={14} /> : <Play size={14} />)}
           >
-            {proxyRunning ? t('dashboard.proxy_stop') : t('dashboard.proxy_start')}
+            {!isOperating && (proxyRunning ? t('dashboard.proxy_stop') : t('dashboard.proxy_start'))}
           </Button>
           <Button
+            data-tut="sys-proxy"
             onClick={handleToggleSysProxy}
             loading={isOperating}
-            variant={sysProxyEnabled ? 'success' : 'outline'}
-            size="sm"
-            icon={isOperating ? undefined : <Globe size={16} />}
+            variant={sysProxyEnabled ? 'contained' : 'outlined'}
+            color={sysProxyEnabled ? 'success' : undefined}
+            size="small"
+            startIcon={!isOperating && <Globe size={14} />}
           >
             {t('dashboard.sys_proxy')}: {sysProxyEnabled ? t('common.on') : t('common.off')}
           </Button>
@@ -226,141 +388,307 @@ const Dashboard: React.FC = () => {
             onClick={handleToggleTUN}
             loading={isTUNBusy}
             disabled={isTUNBusy || !tunStatus.supported}
-            variant={tunStatus.running ? 'warning' : 'outline'}
-            size="sm"
-            icon={isTUNBusy ? undefined : <Globe size={16} />}
+            variant={tunStatus.running ? 'contained' : 'outlined'}
+            color={tunStatus.running ? 'warning' : undefined}
+            size="small"
+            startIcon={!isTUNBusy && <Globe size={14} />}
           >
             {t('dashboard.tun_status')}: {tunStatus.running ? t('common.on') : t('common.off')}
           </Button>
-        </div>
-      </div>
+          <Tooltip title={t('dashboard.outbound_interface_hint')} arrow placement="bottom">
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <FormControl size="small" sx={{ minWidth: 240, maxWidth: 340 }}>
+                <Select
+                  value={outboundInterface}
+                  onChange={(event) => handleInterfaceChange(String(event.target.value))}
+                  disabled={ifaceBusy || interfaces.length === 0}
+                  displayEmpty
+                  inputProps={{ 'aria-label': t('dashboard.outbound_interface') }}
+                  renderValue={(value) => {
+                    const selected = String(value ?? '');
+                    if (!selected) return t('dashboard.outbound_interface_smart');
+                    const iface = interfaces.find((item: any) => item?.name === selected);
+                    return iface ? ifaceLabel(iface) : selected;
+                  }}
+                  sx={{
+                    fontSize: '0.8125rem',
+                    '& .MuiSelect-select': { py: 0.5 },
+                  }}
+                >
+                  <MenuItem value="">
+                    <Globe size={14} />
+                    <Box component="span" sx={{ ml: 1 }}>{t('dashboard.outbound_interface_smart')}</Box>
+                  </MenuItem>
+                  {physicalInterfaces.length > 0 && (
+                    <ListSubheader sx={{ fontSize: '0.6875rem', lineHeight: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      {t('dashboard.outbound_interface')}
+                    </ListSubheader>
+                  )}
+                  {physicalInterfaces.map((iface: any) => (
+                    <MenuItem key={iface.index} value={iface.name} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                      <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{ifaceLabel(iface)}</Box>
+                      {iface.smart_selected && (
+                        <Box component="span" sx={{ fontSize: '0.6875rem', color: 'warning.main', flexShrink: 0 }}>
+                          {t('dashboard.outbound_interface_auto_pick')}
+                        </Box>
+                      )}
+                    </MenuItem>
+                  ))}
+                  {virtualInterfaces.length > 0 && (
+                    <ListSubheader sx={{ fontSize: '0.6875rem', lineHeight: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      {t('dashboard.outbound_interface_virtual')}
+                    </ListSubheader>
+                  )}
+                  {virtualInterfaces.map((iface: any) => (
+                    <MenuItem key={iface.index} value={iface.name} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                      <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{ifaceLabel(iface)}</Box>
+                      {iface.smart_selected && (
+                        <Box component="span" sx={{ fontSize: '0.6875rem', color: 'warning.main', flexShrink: 0 }}>
+                          {t('dashboard.outbound_interface_auto_pick')}
+                        </Box>
+                      )}
+                    </MenuItem>
+                  ))}
+                  {ownInterfaces.length > 0 && (
+                    <ListSubheader sx={{ fontSize: '0.6875rem', lineHeight: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      {t('dashboard.outbound_interface_own')}
+                    </ListSubheader>
+                  )}
+                  {ownInterfaces.map((iface: any) => (
+                    <MenuItem key={iface.index} value={iface.name} disabled>
+                      {ifaceLabel(iface)}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {ifaceBusy && <CircularProgress size={16} />}
+            </Box>
+          </Tooltip>
+        </Box>
+      </Box>
 
-      <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <Card title={t('dashboard.core_status')} icon={<Cpu size={20} />}>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-text-secondary text-sm">{t('dashboard.run_status')}</span>
-              <span className={cn(
-                "px-2 py-0.5 rounded-lg text-[11px] font-black uppercase",
-                proxyRunning ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
-              )}>
-                {proxyRunning ? t('common.running') : t('common.stopped')}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-secondary text-sm">{t('dashboard.work_mode')}</span>
-              <span className="font-bold text-accent">{proxyMode}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-secondary text-sm">{t('dashboard.listen_port')}</span>
-              <span className="font-bold">{port}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-secondary text-sm">{t('dashboard.tun_status')}</span>
-              <span className={cn(
-                "px-2 py-0.5 rounded-lg text-[11px] font-black uppercase",
-                tunStatus.running ? "bg-warning/15 text-warning" : "bg-background-hover text-text-secondary"
-              )}>
-                {tunStatus.running ? t('common.running') : t('common.off')}
-              </span>
-            </div>
-          </div>
-        </Card>
+      <NoticeCenter />
 
-        <Card title={t('dashboard.realtime_traffic')} icon={<Activity size={20} />}>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="p-3 bg-background-soft/50 rounded-2xl border border-border/40 min-w-0">
-              <div className="flex items-center gap-1 text-success mb-1">
-                <ArrowDownRight size={14} aria-hidden />
-                <span className="text-[10px] font-black uppercase">{t('dashboard.download')}</span>
-              </div>
-              <div className="text-lg font-black tabular-nums truncate flex items-baseline gap-1">
-                {formatSpeed(downSpeed).split(' ')[0]}
-                <span className="text-[10px] text-text-muted font-bold uppercase">{formatSpeed(downSpeed).split(' ')[1]}</span>
-              </div>
-            </div>
-            <div className="p-3 bg-background-soft/50 rounded-2xl border border-border/40 min-w-0">
-              <div className="flex items-center gap-1 text-accent mb-1">
-                <ArrowUpRight size={14} aria-hidden />
-                <span className="text-[10px] font-black uppercase">{t('dashboard.upload')}</span>
-              </div>
-              <div className="text-lg font-black tabular-nums truncate flex items-baseline gap-1">
-                {formatSpeed(upSpeed).split(' ')[0]}
-                <span className="text-[10px] text-text-muted font-bold uppercase">{formatSpeed(upSpeed).split(' ')[1]}</span>
-              </div>
-            </div>
-          </div>
-        </Card>
+      {migrationReport && !migrationDismissed &&
+        ((migrationReport.changes?.length || 0) + (migrationReport.warnings?.length || 0) + (migrationReport.errors?.length || 0) > 0) && (
+        <Alert
+          severity={migrationReport.errors?.length ? 'error' : migrationReport.warnings?.length ? 'warning' : 'info'}
+          onClose={() => setMigrationDismissed(true)}
+          sx={{ mx: 3, mb: 2 }}
+        >
+          <AlertTitle>{t('dashboard.migration_report.title')}</AlertTitle>
+          {(() => {
+            const labels: Record<string, string> = {
+              errors: t('dashboard.migration_report.errors'),
+              warnings: t('dashboard.migration_report.warnings'),
+              changes: t('dashboard.migration_report.changes'),
+            };
+            return ['errors', 'warnings', 'changes'].map((field) => {
+              const items: string[] = Array.isArray(migrationReport[field]) ? migrationReport[field] : [];
+              if (items.length === 0) return null;
+              return (
+                <Box key={field} sx={{ mb: 0.5 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>{labels[field]}</Typography>
+                  {items.map((item: string, i: number) => (
+                    <Typography key={i} variant="caption" sx={{ display: 'block', fontSize: 11 }}>{item}</Typography>
+                  ))}
+                </Box>
+              );
+            });
+          })()}
+          {Array.isArray(migrationReport.backup_paths) && migrationReport.backup_paths.length > 0 && (
+            <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontSize: 10, opacity: 0.8 }}>
+              {t('dashboard.migration_report.backups')}: {migrationReport.backup_paths.join(' · ')}
+            </Typography>
+          )}
+        </Alert>
+      )}
 
-        <Card title={t('dashboard.cert_status')} icon={<ShieldCheck size={20} />}>
-          <div className="space-y-3">
-            <div className={cn(
-              "flex items-center gap-2 p-2.5 rounded-2xl border",
-              caStatus.Installed
-                ? "bg-success/10 text-success border-success/30"
-                : "bg-danger/10 text-danger border-danger/30"
-            )}>
-              {caStatus.Installed ? <ShieldCheck size={14} /> : <ShieldAlert size={14} />}
-              <span className="text-xs font-bold truncate">
-                {caStatus.Installed ? t('dashboard.cert_installed') : t('dashboard.cert_not_installed')}
-              </span>
-            </div>
-            <div className="text-[10px] text-text-muted font-medium px-1 flex justify-between items-center">
-              <span className="truncate max-w-[140px] opacity-60 text-[9px]" title={caStatus.CertPath}>
-                {caStatus.CertPath || t('dashboard.path_pending')}
-              </span>
-              <button onClick={() => OpenCAFile()} className="flex items-center gap-1 text-accent hover:underline font-bold shrink-0" aria-label="查看证书">
-                <Search size={10} aria-hidden /> {t('common.view')}
-              </button>
-            </div>
-          </div>
-        </Card>
+      <Box sx={{ flexGrow: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', width: '100%', pb: 6 }}>
+      <Grid container spacing={3}>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Box className="ss-card-hover" sx={{ p: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: '10%', boxShadow: 1, aspectRatio: '1 / 1' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+              <Box sx={{ color: 'primary.main' }}><Cpu size={20} /></Box>
+              <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'text.secondary', letterSpacing: '-0.01em', textTransform: 'uppercase' }}>
+                {t('dashboard.core_status')}
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>{t('dashboard.run_status')}</Typography>
+                <Box sx={{ px: 1, py: 0.25, borderRadius: 1, fontSize: '0.75rem', fontWeight: 'bold', textTransform: 'uppercase', bgcolor: proxyRunning ? 'success.main' : 'error.main', color: proxyRunning ? 'success.contrastText' : 'error.contrastText', flexShrink: 0, ...(proxyRunning ? { animation: 'ss-pulse-glow 2s ease-in-out infinite' } : {}) }}>
+                  {proxyRunning ? t('common.running') : t('common.stopped')}
+                </Box>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>{t('dashboard.work_mode')}</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'primary.main', flexShrink: 0 }}>
+                  {proxyMode}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>{t('dashboard.listen_port')}</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 'bold', flexShrink: 0 }}>
+                  {port}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>{t('dashboard.tun_status')}</Typography>
+                <Box sx={{ px: 1, py: 0.25, borderRadius: 1, fontSize: '0.75rem', fontWeight: 'bold', textTransform: 'uppercase', bgcolor: tunStatus.running ? 'warning.main' : 'action.hover', color: tunStatus.running ? 'warning.contrastText' : 'text.secondary', flexShrink: 0 }}>
+                  {tunStatus.running ? t('common.running') : t('common.off')}
+                </Box>
+              </Box>
+            </Box>
+          </Box>
+        </Grid>
 
-        <Card title={t('dashboard.conn_info')} icon={<ShieldCheck size={20} />} className="lg:col-span-1">
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 p-2.5 bg-accent/10 border border-accent/20 rounded-2xl">
-              <Zap size={14} className="text-accent" aria-hidden />
-              <span className="text-sm font-bold text-accent truncate">127.0.0.1:{port}</span>
-            </div>
-            <div className="text-[11px] text-text-muted font-medium px-1 flex items-center justify-end">
-              <span className="text-[9px] bg-background-hover px-1.5 py-0.5 rounded text-text-secondary uppercase">{t('common.ready')}</span>
-            </div>
-          </div>
-        </Card>
-      </section>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Box className="ss-card-hover" sx={{ p: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: '10%', boxShadow: 1, aspectRatio: '1 / 1' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+              <Box sx={{ color: 'primary.main' }}><Shield size={20} /></Box>
+              <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'text.secondary', letterSpacing: '-0.01em', textTransform: 'uppercase' }}>
+                {t('dashboard.cert_status')}
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.25, borderRadius: 2, border: 1, bgcolor: caStatus.Installed ? 'success.main' : 'error.main', color: caStatus.Installed ? 'success.contrastText' : 'error.contrastText', borderColor: caStatus.Installed ? 'success.light' : 'error.light', minWidth: 0 }}>
+                {caStatus.Installed ? <Shield size={18} /> : <ShieldAlert size={18} />}
+                <Typography variant="caption" sx={{ fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>
+                  {caStatus.Installed ? t('dashboard.cert_installed') : t('dashboard.cert_not_installed')}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', fontSize: '0.75rem', color: 'text.secondary', fontWeight: 'medium', px: 1, justifyContent: 'space-between', alignItems: 'center', minWidth: 0 }}>
+                <Typography noWrap sx={{ maxWidth: 140, opacity: 0.6, fontSize: '0.625rem', py: 0.25, outline: '1px solid transparent' }} title={caStatus.CertPath}>
+                  {caStatus.CertPath || t('dashboard.path_pending')}
+                </Typography>
+                <Button
+                  variant="text"
+                  size="small"
+                  onClick={() => OpenCAFile()}
+                  sx={{ gap: 0.5, color: 'primary.main', fontWeight: 'bold', '&:hover': { textDecoration: 'underline' }, flexShrink: 0 }}
+                  startIcon={<Search size={14} />}
+                >
+                  {t('common.view')}
+                </Button>
+              </Box>
+            </Box>
+          </Box>
+        </Grid>
 
-      <Modal isOpen={showCertModal} onClose={() => setShowCertModal(false)} title={t('dashboard.install_cert.title')} maxWidth="max-w-md">
-        <div className="space-y-6 py-2">
-          <div className="flex justify-center">
-            <div className="w-20 h-20 bg-accent/10 rounded-full flex items-center justify-center text-accent animate-pulse">
-              <Lock size={40} />
-            </div>
-          </div>
-          <div className="text-center space-y-2">
-            <h4 className="text-lg font-bold">{t('dashboard.install_cert.subtitle')}</h4>
-          </div>
-          <div className="bg-background-soft/50 border border-border rounded-2xl p-4 space-y-3">
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5 text-warning group-hover:scale-110 transition-transform">
-                <ShieldAlert size={16} />
-              </div>
-              <div className="space-y-1">
-                <p className="text-[11px] font-bold">{t('dashboard.install_cert.security_alert')}</p>
-                <p className="text-[10px] text-text-muted leading-normal">{t('dashboard.install_cert.security_desc')}</p>
-              </div>
-            </div>
-          </div>
-          <div className="flex flex-col gap-3 pt-2">
-            <Button onClick={handleInstallCA} loading={isInstallingCert} icon={isInstallingCert ? undefined : <Download size={18} />} className="w-full">
+        <Grid size={{ xs: 12, md: 4 }}>
+          <Box className="ss-card-hover" sx={{ p: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: '10%', boxShadow: 1, aspectRatio: '1 / 1' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+              <Box sx={{ color: 'primary.main' }}><Shield size={20} /></Box>
+              <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'text.secondary', letterSpacing: '-0.01em', textTransform: 'uppercase' }}>
+                {t('dashboard.conn_info')}
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.25, bgcolor: 'primary.main', border: 1, borderColor: 'primary.main', borderRadius: 2, minWidth: 0 }}>
+                <Bolt size={18} color="primary.contrastText" aria-hidden />
+                <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'primary.contrastText', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', py: 0.25, outline: '1px solid transparent' }}>
+                  127.0.0.1:{port}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', fontSize: '0.75rem', color: 'text.secondary', fontWeight: 'medium', px: 1, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <Typography sx={{ fontSize: '0.625rem', bgcolor: 'action.hover', px: 1.5, py: 0.25, borderRadius: 1, textTransform: 'uppercase', color: 'text.secondary' }}>
+                  {t('common.ready')}
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
+        </Grid>
+      </Grid>
+      </Box>
+
+      <Modal isOpen={showCertModal} onClose={() => setShowCertModal(false)} title={t('dashboard.install_cert.title')} maxWidth="md">
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, py: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+            <Box sx={{ width: 56, height: 56, borderRadius: '50%', bgcolor: 'primary.main', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Lock size={24} color="primary.contrastText" />
+            </Box>
+          </Box>
+          <Box sx={{ textAlign: 'center' }}>
+            <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
+              {t('dashboard.install_cert.subtitle')}
+            </Typography>
+          </Box>
+          <Box sx={{ bgcolor: 'background.default', border: 1, borderColor: 'divider', borderRadius: 2, p: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+              <Box sx={{ mt: 0.5, color: 'warning.main' }}>
+                <ShieldAlert size={20} />
+              </Box>
+              <Box>
+                <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                  {t('dashboard.install_cert.security_alert')}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.5, display: 'block' }}>
+                  {t('dashboard.install_cert.security_desc')}
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, pt: 1 }}>
+            <Button
+              onClick={handleInstallCA}
+              loading={isInstallingCert}
+              variant="contained"
+              fullWidth
+              startIcon={!isInstallingCert && <Download size={16} />}
+            >
               {isInstallingCert ? t('dashboard.install_cert.installing') : t('dashboard.install_cert.install_now')}
             </Button>
-            <Button onClick={() => setShowCertModal(false)} variant="ghost" className="w-full">
+            <Button onClick={() => setShowCertModal(false)} variant="text" fullWidth>
               {t('dashboard.install_cert.remind_later')}
             </Button>
-          </div>
-        </div>
+          </Box>
+        </Box>
       </Modal>
-    </div>
+
+      <Modal isOpen={showKillDialog} onClose={() => setShowKillDialog(false)} title={portOccupant && portOccupant.pid <= 0 ? t('dashboard.port_occupied.title_unavailable') : t('dashboard.port_occupied.title_occupied')} maxWidth="sm"
+        footer={portOccupant && portOccupant.pid <= 0 ? (
+          <Button type="button" onClick={() => setShowKillDialog(false)} variant="contained" size="small">
+            {t('dashboard.port_occupied.ok')}
+          </Button>
+        ) : (
+          <>
+            <Button type="button" onClick={() => setShowKillDialog(false)} variant="outlined" size="small">
+              {t('common.cancel')}
+            </Button>
+            <Button type="button" onClick={handleKillAndRetry} variant="contained" color="error" size="small" startIcon={<ShieldAlert size={16} />}>
+              {t('dashboard.port_occupied.kill_and_retry')}
+            </Button>
+          </>
+        )}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+          <Box sx={{ mt: 0.5, color: 'error.main', flexShrink: 0 }}>
+            <ShieldAlert size={22} />
+          </Box>
+          <Box>
+            {portOccupant && portOccupant.pid <= 0 ? (
+              <>
+                <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'text.primary' }}>
+                  {t('dashboard.port_occupied.excluded_range', { port: portOccupant?.port, name: portOccupant?.name })}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, lineHeight: 1.6 }}>
+                  {t('dashboard.port_occupied.excluded_desc')}
+                </Typography>
+              </>
+            ) : (
+              <>
+                <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'text.primary' }}>
+                  {t('dashboard.port_occupied.occupied_by', { port: portOccupant?.port ?? '', name: portOccupant?.name || t('dashboard.port_occupied.unknown_process'), pid: portOccupant?.pid ?? '' })}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, lineHeight: 1.6 }}>
+                  {t('dashboard.port_occupied.occupied_desc')}
+                </Typography>
+              </>
+            )}
+          </Box>
+        </Box>
+      </Modal>
+    </Box>
   );
 };
 

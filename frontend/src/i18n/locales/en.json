@@ -1,13 +1,44 @@
 {
+  "profiles": {
+    "title": "Configuration Profiles",
+    "desc": "Save named configuration snapshots for different networks or usage scenarios (rules and settings stay isolated per profile). Switching stops the proxy and drops active connections first.",
+    "active": "active",
+    "none_active": "no profile active",
+    "create": "Create from current",
+    "create_title": "Create profile",
+    "rename": "Rename",
+    "rename_title": "Rename profile",
+    "duplicate": "Duplicate",
+    "duplicate_title": "Duplicate profile",
+    "switch": "Switch",
+    "switch_confirm_title": "Switch profile",
+    "switch_confirm_desc": "Switching to \"{name}\" stops the proxy and drops all active connections, then replaces the current configuration with this profile's contents (unsaved edits are saved back into the outgoing profile). Restart the proxy manually afterwards. Continue?",
+    "export": "Export",
+    "import": "Import",
+    "name_label": "Profile name",
+    "updated": "updated",
+    "created": "Profile created",
+    "renamed": "Profile renamed",
+    "duplicated": "Profile duplicated",
+    "switched": "Profile switched, proxy stopped",
+    "exported": "Profile exported",
+    "imported": "Profile imported",
+    "imported_with_warnings": "Profile imported with warnings",
+    "import_invalid": "Import failed: invalid profile bundle",
+    "action_failed": "Action failed",
+    "empty": "No profiles yet — create one from the current configuration"
+  },
   "common": {
     "loading": "Loading...",
     "save": "Save",
     "cancel": "Cancel",
+    "close": "Close",
     "confirm": "Confirm",
     "on": "ON",
     "off": "OFF",
     "success": "Success",
     "failed": "Failed",
+    "saving": "Saving...",
     "status": "Status",
     "view": "View",
     "edit": "Edit",
@@ -19,7 +50,10 @@
     "ready": "Ready",
     "running": "Running",
     "stopped": "Stopped",
-    "error": "Error"
+    "error": "Error",
+    "no_matches": "No options",
+    "clear": "Clear",
+    "expand_options": "Expand options"
   },
   "sidebar": {
     "dashboard": "Dashboard",
@@ -28,8 +62,15 @@
     "routing": "Auto Route",
     "dns": "DNS Settings",
     "logs": "Real-time Logs",
+    "connections": "Live Connections",
+    "profiles": "Profiles",
     "settings": "Settings",
-    "about": "About"
+    "about": "About",
+    "light_mode": "Light mode",
+    "dark_mode": "Dark mode",
+    "nav_label": "Main navigation",
+    "dark_mode_aria": "Switch to dark mode",
+    "light_mode_aria": "Switch to light mode"
   },
   "welcome": {
     "title": "Welcome to SniShaper",
@@ -37,12 +78,56 @@
     "select_language": "Select Language",
     "start": "Get Started"
   },
+  "tutorial": {
+    "skip": "Skip",
+    "back": "Back",
+    "next": "Next",
+    "done": "Finish",
+    "open_wiki": "Open Wiki",
+    "s1": { "title": "Start the Proxy", "text": "Click the highlighted \"Start Proxy\" button to launch the local proxy." },
+    "s2": { "title": "System Proxy", "text": "Now click \"System Proxy\" so browser traffic is automatically routed through the proxy." },
+    "s3": { "title": "Use Rules", "text": "The Rules page ships with official rules applying MITM, TLS fragmentation, QUIC and more per site group. Create your own groups here; domains outside the rules are routed automatically via the GFWList." },
+    "s4": { "title": "Install the Certificate", "text": "MITM, QUIC and other modes need the root certificate. When it is not installed, the Dashboard offers a one-click install prompt; this section shows and manages installed certificates." },
+    "s5": { "title": "TUN Mode", "text": "Enable TUN under \"Settings → TUN\" (admin rights required) when every app should use the proxy without extra configuration." },
+    "s6": { "title": "Learn More", "text": "Congrats on finishing the basics! For advanced features (CLI, DNS, Cloudflare IP selection, Evolution mode, etc.) visit the GitHub Wiki, and check the FAQ first when you run into problems." }
+  },
+  "notices": {
+    "title": "Announcements",
+    "subtitle": "{count} announcements, newest first",
+    "pinned": "Pinned",
+    "expired": "Expired",
+    "empty": "No announcements",
+    "refresh": "Refresh",
+    "close": "Close",
+    "view_all": "View all",
+    "mark_read": "Mark as read",
+    "more_unread": "{count} more unread",
+    "history_entry": "All announcements · {count}",
+    "stale": "Announcement service unreachable, showing cached content",
+    "link_default": "Learn more"
+  },
   "dashboard": {
     "title": "Home",
+    "migration_report": {
+      "title": "Configuration migration report",
+      "changes": "Applied changes",
+      "warnings": "Warnings",
+      "errors": "Errors",
+      "backups": "Backups of the original configuration"
+    },
     "proxy_start": "Start Proxy",
     "proxy_stop": "Stop Proxy",
     "sys_proxy": "System Proxy",
     "tun_status": "TUN",
+    "outbound_interface": "Outbound NIC",
+    "outbound_interface_smart": "Smart (recommended)",
+    "outbound_interface_hint": "Physical adapter bound for TUN outbound traffic. Smart mode skips virtual adapters and picks the physical owner of the lowest-metric default route.",
+    "outbound_interface_virtual": "virtual",
+    "outbound_interface_own": "proxy TUN",
+    "outbound_interface_default": "default route",
+    "outbound_interface_auto_pick": "auto",
+    "outbound_interface_applied": "Outbound NIC updated",
+    "outbound_interface_failed": "Failed to switch outbound NIC",
     "core_status": "Core Status",
     "run_status": "Run Status",
     "work_mode": "Mode",
@@ -67,19 +152,28 @@
     "notifications": {
       "tun_not_running": "TUN is not running",
       "tun_updated": "TUN status updated",
-      "tun_failed": "TUN toggle failed"
+      "tun_failed": "TUN toggle failed",
+      "proxy_toggle_failed": "Proxy operation failed",
+      "kill_process_failed": "Failed to kill process or restart",
+      "sys_proxy_failed": "System proxy operation failed",
+      "tun_starting": "TUN is starting, please wait...",
+      "tun_timeout": "TUN startup timed out. Check the logs.",
+      "tun_stopped": "TUN path disabled."
+    },
+    "port_occupied": {
+      "title_unavailable": "Port Unavailable",
+      "title_occupied": "Port In Use",
+      "ok": "OK",
+      "kill_and_retry": "Kill Process & Retry",
+      "excluded_range": "Port {port} falls within Windows excluded port range ({name})",
+      "excluded_desc": "This port is reserved by the system (usually occupied by Hyper-V / WSL / Docker). There is no process to kill. Change the listening port in settings, or stop the related services and restart the proxy.",
+      "occupied_by": "Port {port} is in use by {name} (PID {pid})",
+      "occupied_desc": "The proxy cannot listen on this port. Killing the process will automatically retry starting the proxy. Make sure this is not an important program.",
+      "unknown_process": "Unknown process"
     }
   },
   "proxies": {
     "title": "Proxies",
-    "server_node": "Server Node",
-    "testing": "Testing...",
-    "test_conn": "Test Connection",
-    "test_hint": "Test internal connectivity (bypassing rules)",
-    "node_host": "Node Host",
-    "auth_secret": "Auth Secret (AUTH_SECRET)",
-    "auth_placeholder": "Enter server password",
-    "save_node": "Save Node Config",
     "ech_management": "ECH Config Management",
     "add_ech": "Add Config",
     "no_ech": "No ECH Configs",
@@ -89,7 +183,31 @@
     "edit_ech": "Edit ECH Config",
     "probe_ech": "Probe & Create ECH Config",
     "modifying": "Modifying",
-    "probe_hint": "Probe ECH resources via DoH domain"
+    "probe_hint": "Probe ECH resources via DoH domain",
+    "nat64_management": "NAT64 Configuration Management",
+    "add_nat64": "Add NAT64 Config",
+    "edit_nat64": "Edit NAT64 Config",
+    "no_nat64": "No NAT64 configurations",
+    "delete_nat64_confirm": "Are you sure you want to delete this NAT64 config?",
+    "nat64_form_subtitle": "Configure separate prefix mapping to bypass specific IP blacklists",
+    "nat64_form_name": "Config Name",
+    "nat64_form_prefix": "NAT64 Prefix",
+    "migration_service": "Connection Migration Service",
+    "migration_service_title": "Migration API URL",
+    "migration_service_desc": "Configure connection migration service URL",
+    "migration_service_hint": "Enter migration service API URL",
+    "test_connect": "Test Connection",
+    "testing": "Testing...",
+    "delete_aria": "Delete {name}",
+    "nat64_placeholder_name": "e.g. bypass specific blacklist",
+    "nat64_placeholder_prefix": "e.g. 64:ff9b::",
+    "notifications": {
+      "connect_success": "{name}: connected, latency {ms} ms",
+      "connect_failed": "{name}: connection failed: {error}",
+      "migration_required": "Please enter the migration service address",
+      "test_success": "Test successful",
+      "saved": "Saved"
+    }
   },
   "ech_form": {
     "title": "ECH Assisted Discovery",
@@ -147,7 +265,9 @@
       "updated": "DNS Node updated",
       "added": "DNS Node added",
       "deleted": "DNS Node deleted"
-    }
+    },
+    "move_up": "Move Up",
+    "move_down": "Move Down"
   },
   "rules": {
     "title": "Site Rules",
@@ -161,6 +281,23 @@
     "delete_warning": ", it will not be automatically restored.",
     "copy_success": "Config Copied",
     "copy_hint": "You can now paste and share directly.",
+    "explain_button": "Test domain",
+    "explain_title": "Rule match test",
+    "explain_subtitle": "Simulates how a domain would be handled; the result is a prediction, not the decision made for a real connection.",
+    "explain_host_label": "Domain",
+    "explain_process_label": "Process (optional)",
+    "explain_run": "Test",
+    "explain_running": "Testing…",
+    "explain_simulated_badge": "Simulated",
+    "explain_host": "Host",
+    "explain_mode": "Mode",
+    "explain_source": "Source",
+    "explain_rule": "Matched rule",
+    "explain_upstream": "Upstream",
+    "explain_dns": "DNS mode",
+    "explain_sni_fake": "Fake SNI",
+    "explain_downgraded": "Global transparent mode downgraded this MITM rule to direct to avoid certificate errors.",
+    "explain_candidates": "Candidate rules (by priority)",
     "form": {
       "name": "Description Name",
       "name_placeholder": "e.g. Google Services",
@@ -171,6 +308,9 @@
       "no_domains": "No matching domains added yet",
       "advanced_show": "Expand Advanced Settings",
       "advanced_hide": "Collapse Advanced Settings",
+      "process": "Per-Application Routing (Process)",
+      "process_placeholder": "e.g. telegram.exe, discord.exe (empty = all applications)",
+      "process_hint": "Applies only to connections from the listed processes (comma separated, case-insensitive). Process rules outrank domain rules; if the process cannot be identified the rule never applies. Empty domain list means all destinations for that process.",
       "upstream": "Upstream Server",
       "upstream_placeholder": "Leave empty for direct, or enter 1.2.3.4:443",
       "dns_policy": "DNS Resolution Policy",
@@ -181,14 +321,30 @@
       "ech_enable": "ECH Encryption",
       "ech_hint": "Try ECH connection if enabled",
       "cf_pool": "Preferred IP Pool",
-      "cf_pool_hint": "Prioritize using Cloudflare Preferred IPs"
+      "cf_pool_hint": "Prioritize using Cloudflare Preferred IPs",
+      "ip_pool_select": "Select Named IP Pool",
+      "ip_pool_count": "{count} IPs",
+      "nat64_enable": "Enable NAT64 Mapping",
+      "nat64_hint": "Enable NAT64 mapping transformation for this rule",
+      "nat64_profile": "NAT64 Configuration",
+      "add_domain": "Add domain",
+      "remove_domain": "Remove domain",
+      "cert_verify_warn": "Only enable if you are sure about the target certificate source",
+      "allow_spki_list": "Allow SPKI SHA256 list",
+      "prefix_label": "Prefix: {prefix}",
+      "website_placeholder": "e.g. google.com",
+      "placeholder_domains": "One domain per line, e.g.\n*.github.com\ngithub.com",
+      "placeholder_suffixes": "One suffix per line, e.g.\n.github.com\n.cloudfront.net",
+      "placeholder_spki": "One Base64 fingerprint per line",
+      "placeholder_mapped": "e.g. github-com.mapped",
+      "manual_ech": "Manually configured ECH"
     },
     "modes": {
       "mitm": "Modify SNI or inject ECH config",
-      "server": "Connect to upstream reverse proxy",
       "tls-rf": "TLS Fragmenting",
       "quic": "QUIC Fragment Obfuscation",
-      "transparent": "No TLS decryption, pass-through"
+      "transparent": "No TLS decryption, pass-through",
+      "migration": "TLS 1.2 Session Resumption"
     },
     "cert_policy": {
       "ignore": "Ignore Cert Verification",
@@ -201,26 +357,114 @@
       "ipv4_only": "IPv4 Only",
       "ipv6_only": "IPv6 Only"
     },
+    "fragment": {
+      "title": "Fragmentation",
+      "reset": "Reset",
+      "tcp_only": "TCP-only fragmentation",
+      "records": "TLS record count (1-8)",
+      "segments": "TCP segment count (1-16)",
+      "interval": "Send interval (ms)",
+      "minorver": "Modify minor version",
+      "oob": "Out-of-band sending (OOB)"
+    },
     "display": {
       "transparent": "Pass-through",
       "direct": "Direct",
-      "fragment": "Fragment"
+      "fragment": "Fragment",
+      "migration": "Migration",
+      "others": "Others",
+      "default_group": "Default",
+      "cf_ip_pool": "CF IP POOL",
+      "ip_pool_name": "IP POOL: {name}",
+      "doh_dynamic": "DOH DYNAMIC"
     },
     "notifications": {
-      "deleted": "Rule deleted"
-    }
+      "deleted": "Rule deleted",
+      "save_success": "Rule saved",
+      "save_error": "Failed to save rule",
+      "save_error_hint": "Please check your input and try again",
+      "delete_error": "Failed to delete rule",
+      "reverted": "Reverted to upstream default",
+      "revert_error": "Revert failed"
+    },
+    "edit_rule_aria": "Edit rule",
+    "delete_rule_aria": "Delete rule",
+    "override_badge": "Modified",
+    "custom_badge": "Custom",
+    "revert_rule": "Revert to default",
+    "revert_hint": "This discards your local changes and restores the upstream default.",
+    "revert_prefix": "Revert ",
+    "revert_warning": " to its upstream default?",
+    "revert_aria": "Revert this rule to upstream default",
+    "filter_mode_aria": "Filter mode",
+    "filter_source_aria": "Filter by source",
+    "source_all": "All",
+    "source_default": "Default",
+    "source_override": "Modified",
+    "source_user": "Custom",
+    "export_aria": "Export config",
+    "update_rules": "Update rules",
+    "update_running": "Updating...",
+    "update_latest": "Rules are already up to date",
+    "update_latest_detail": "Remote updated {date} · {hash}",
+    "update_applied_detail": "Local {local} → remote {remote} · remote updated {date}",
+    "update_applied": "Rules updated: {added} added, {changed} changed, {removed} removed",
+    "update_failed": "Rules update failed"
+  },
+  "connections": {
+    "title": "Live Connections",
+    "count": "{n} connections",
+    "search_placeholder": "Search host / rule / mode",
+    "empty": "No active connections",
+    "no_match": "No matching connections",
+    "col_host": "Host",
+    "col_dst": "Destination",
+    "col_rule": "Rule",
+    "col_mode": "Mode",
+    "col_up": "Up",
+    "col_down": "Down",
+    "col_age": "Age",
+    "col_state": "State",
+    "state_active": "Active",
+    "copy_detail": "Copy connection details",
+    "age_seconds": "{s}s",
+    "age_minutes": "{m}m",
+    "age_hours": "{h}h"
   },
   "logs": {
     "title": "System Logs",
+    "level_error": "ERR",
+    "level_warn": "WRN",
+    "level_info": "INF",
     "capture": "Capture Logs",
     "stop_capture": "Stop Capture",
     "resume": "Resume",
     "pause": "Pause",
     "scroll_top": "Scroll to Top",
     "clear": "Clear",
+    "export": "Export",
     "search_placeholder": "Search keywords, domains, error codes...",
     "capture_hint": "Log capture is disabled by default. Click 'Capture Logs' to start temporary collection and auto-scroll to the latest logs.",
-    "no_logs": "No logs collected"
+    "no_logs": "No logs collected",
+    "latest": "Latest",
+    "capture_disabled": "CAPTURE DISABLED",
+    "capture_on": "CAPTURE ON",
+    "capture_off": "CAPTURE OFF",
+    "buffer": "BUFFER: {count} LINES",
+    "refresh_paused": "REFRESH PAUSED",
+    "diag_button": "Diagnostics",
+    "diag_title": "Export diagnostics package",
+    "diag_hint": "Review the included files and redacted fields before export; the package is meant for bug reports.",
+    "diag_files_title": "Included files",
+    "diag_redacted_title": "Redacted fields",
+    "diag_redacted_api_key": "API keys (api_key)",
+    "diag_redacted_url_credentials": "URL credentials (user:pass@)",
+    "diag_redacted_query_token": "Query parameter tokens (token=…)",
+    "diag_redacted_bearer": "Bearer tokens",
+    "diag_export": "Export",
+    "diag_exporting": "Exporting…",
+    "diag_success": "Diagnostics package exported",
+    "diag_failed": "Failed to export diagnostics package"
   },
   "routing": {
     "title": "Auto Routing",
@@ -230,13 +474,11 @@
     "mode_switch": "Routing Mode Switch",
     "modes": {
       "off": "OFF",
-      "smart": "Smart",
-      "server": "Server"
+      "smart": "Smart"
     },
     "gfwlist_check": "GFWList Status",
     "preloaded": "Preloaded {count} routing rules",
     "inactive": "Rule source inactive",
-    "update_list": "Update Rules",
     "save_apply": "Save & Apply",
     "features": "Features",
     "feature_smart": "Smart Mode",
@@ -245,20 +487,43 @@
     "feature_priority_desc": "Manually defined 'Rules' have the highest priority. Auto routing applies if no rules match.",
     "notifications": {
       "saved": "Routing settings saved",
-      "saved_desc": "New auto routing policy has been applied.",
-      "updated": "Rule source updated",
-      "updated_desc": "Currently loaded {count} auto routing rules."
+      "saved_desc": "New auto routing policy has been applied."
     }
+  },
+  "network": {
+    "ipv6_title": "IPv6 Detection",
+    "ipv6_refresh": "Re-check",
+    "ipv6_checking": "Checking...",
+    "ipv6_ok": "IPv6 detected",
+    "ipv6_ok_desc": "A global IPv6 address exists on this network. IPv6 features (NAT64 mapping, IPv6 DNS policy, evolution test IPv6 option) are available.",
+    "ipv6_disabled_title": "Current network is IPv4-only",
+    "ipv6_disabled_desc": "No usable global IPv6 address was detected. NAT64 and IPv6 DNS policies can still be configured, but they will fail to connect on an IPv4-only network (they never fall back to IPv4 silently). They take effect once IPv6 is detected. A check runs every 10 minutes, or use the button to re-check now.",
+    "ipv6_disabled": "IPv4-only network: IPv6 rules (NAT64, IPv6 DNS) cannot take effect",
+    "ipv6_only_will_fail": "IPv4-only network: IPv6-only will fail to connect",
+    "ipv6_nat64_will_fail": "IPv4-only network: NAT64 requires IPv6 to work",
+    "ipv6_warn_suffix": "IPv4-only environment: IPv6 connectivity cannot be tested",
+    "ipv6_restored": "IPv6 detected: NAT64, IPv6 rules and other features are back",
+    "recovery_recovered": "Leftover system proxy from the previous crashed run detected; network settings restored automatically",
+    "recovery_left": "Leftover system proxy marker detected, but the current system proxy was changed by another program; nothing was modified",
+    "recovery_failed": "Leftover system proxy detected, but recovery failed (administrator rights may be required)"
   },
   "settings": {
     "title": "Settings",
+    "tutorial": {
+      "title": "Getting Started",
+      "desc": "Replay the beginner tutorial",
+      "replay": "Replay Tutorial"
+    },
     "tabs": {
       "general": "General",
+      "port": "Port",
       "proxy": "Proxy",
       "network": "Network",
       "security": "Security",
       "appearance": "UI & Theme",
-      "startup": "Startup"
+      "startup": "Startup",
+      "logs": "Logs",
+      "tun": "TUN Virtual NIC"
     },
     "language": {
       "title": "Language",
@@ -275,25 +540,39 @@
       "title": "Start on Boot",
       "desc": "Run automatically in background after Windows login."
     },
+    "auto_start_method": {
+      "title": "Autostart Method",
+      "desc": "How the autostart entry is registered.",
+      "task": "Task Scheduler",
+      "task_desc": "Scheduled task launched at logon with highest privileges, no UAC prompt.",
+      "service": "Windows Service",
+      "service_desc": "A system service launches the app in your session with full privileges at logon, no UAC prompt.",
+      "registry": "Registry",
+      "registry_desc": "Registry Run entry launched at logon; one UAC prompt is shown."
+    },
     "auto_proxy": {
       "title": "Auto-enable proxy on startup",
       "desc": "Proxy will be enabled immediately after application starts."
+    },
+    "auto_sysproxy": {
+      "title": "Set system proxy on auto-enable",
+      "desc": "Also enable the system proxy when the proxy is auto-enabled at startup. Disable to start the local proxy service only."
+    },
+    "auto_update_rules": {
+      "title": "Auto-update rules",
+      "desc": "Check GitHub for the latest rules on every start and merge them in. Rules are only added and updated; rules you edited yourself are never overwritten."
     },
     "show_main": {
       "title": "Show main window on startup",
       "desc": "If disabled, the app will only run in the tray when auto-started."
     },
-    "socks5": {
-      "title": "Enable SOCKS5 Support",
-      "desc": "When enabled, a separate SOCKS5 proxy server will be started.",
-      "port": "Port"
-    },
     "min_to_tray": {
       "title": "Minimize to Tray",
       "desc": "Hide to tray instead of exiting when clicking close."
     },
-    "http_port": "HTTP Proxy Port",
-    "socks_port": "SOCKS5 Proxy Port",
+    "port_title": "Proxy Port",
+    "port_label": "Port",
+    "port_desc": "HTTP and SOCKS5 share this port.",
     "lan_sharing": {
       "title": "LAN Sharing",
       "desc": "Allow other devices in the local network to connect."
@@ -312,6 +591,99 @@
     },
     "cf_pool": {
       "fetch_now": "Refresh IP Pool"
+    },
+    "ip_pools": {
+      "title": "Multi-CDN IP Pools",
+      "subtitle": "Manually maintain named preferred-IP pools per CDN; rules can select them by name",
+      "empty": "No custom IP pools yet — add one with the form below",
+      "name_label": "Pool name",
+      "ips_label": "IP list (comma/space/newline separated)",
+      "add": "Add",
+      "added": "IP pool {name} added",
+      "removed": "IP pool {name} removed",
+      "ip_count": "{count} IPs",
+      "invalid_name": "Invalid or reserved name (cloudflare)",
+      "no_ips": "Enter at least one IP address",
+      "duplicate_name": "An IP pool with this name already exists"
+    },
+    "logs": {
+      "title": "Log Files",
+      "desc": "Logs are saved to the log folder next to the app; each run creates a new timestamped file.",
+      "view": "View",
+      "clean": "Clean Up",
+      "current": "Current",
+      "empty": "No log files",
+      "no_content": "(empty)",
+      "clean_done": "Cleaned {count} old log file(s)"
+    },
+    "notifications": {
+      "updated": "Settings updated",
+      "port_invalid": "Please enter a valid port between 1 and 65535"
+    },
+    "theme": {
+      "label": "Color Scheme",
+      "desc": "Choose the interface color scheme (both support dark/light mode).",
+      "default": "Default MUI",
+      "sniShaper": "Classic SniShaper Blue",
+      "forest": "Forest Green",
+      "sunset": "Sunset Orange",
+      "ocean": "Ocean Teal",
+      "graphite": "Graphite"
+    },
+    "select_language": "Select language",
+    "select_theme": "Select theme",
+    "certs_count": "{count} CERTS",
+    "ip_pool": "IP POOL ({count})",
+    "update_channel": {
+      "title": "Release Channel",
+      "desc": "Select the release channel to receive updates. Update checks are filtered by this channel.",
+      "alpha": "Alpha (Preview): fastest feature iteration, lowest stability, for early adopters",
+      "beta": "Beta (Testing): includes some new features, may contain defects, for test feedback",
+      "rc": "Release Candidate: close to the official release, only critical fixes",
+      "stable": "Stable: official releases only, recommended for most users"
+    },
+    "download_source": {
+      "title": "Download Source",
+      "desc": "Pick the download source for update packages. Smart mode measures every mirror and uses the fastest; a specific mirror is tried first, falling back to direct and the other mirrors.",
+      "direct": "Direct",
+      "smart": "Smart (auto-select fastest)",
+      "custom": "Custom",
+      "custom_placeholder": "https://your-mirror.example.com/",
+      "measure": "Measure",
+      "measuring": "Measuring...",
+      "unreachable": "unreachable"
+    },
+    "tun": {
+      "outbound_iface": {
+        "title": "Outbound interface",
+        "desc": "Which NIC carries TUN outbound traffic. By default it is chosen automatically from the system default route, avoiding VMware / Hyper-V / container virtual adapters.",
+        "auto": "Smart (automatic)",
+        "physical": "physical",
+        "virtual": "virtual",
+        "default_route": "default route",
+        "in_use": "in use"
+      },
+      "outbound_exclude": {
+        "label": "Excluded interfaces (optional)",
+        "placeholder": "VMware*,vEthernet*",
+        "hint": "Select or type interface names. Separate multiple names with commas. Wildcards like VMware* are supported.",
+        "error": "⚠️ Warning: Input contains unknown interface names or names without a wildcard (*). Please check spelling or add *."
+      },
+      "stack": {
+        "title": "TUN network stack",
+        "desc": "gvisor has the widest compatibility; mixed offloads TCP to the system; system is kernel-mode with the lowest overhead.",
+        "gvisor": "gvisor (userspace)",
+        "mixed": "mixed",
+        "system": "system (kernel)"
+      },
+      "adapter_name": {
+        "title": "Virtual adapter name",
+        "desc": "Name of the TUN virtual adapter. Leave empty to use the default name SniShaper."
+      },
+      "route_exclude": {
+        "title": "Excluded networks",
+        "desc": "These networks bypass the tunnel and follow the system default route. Comma-separated CIDRs."
+      }
     }
   },
   "evolution": {
@@ -368,6 +740,8 @@
     "steps": {
       "direct": "Direct",
       "tcping": "TCPing",
+      "tcp_ping": "TCPing",
+      "tcp_ping_nat64": "TCPing (NAT64)",
       "domain_fronting": "Domain Front",
       "tls_fragment": "TLS Fragment",
       "ech": "ECH",
@@ -396,6 +770,9 @@
     "development_plan": "Development Plan",
     "development_plan_desc": "View the project roadmap and upcoming features and improvements.",
     "view_plan": "View Details",
+    "qq_group": "QQ Group",
+    "qq_group_desc": "Join the group chat to talk directly with SniShaper and FlowWeaver users and developers.",
+    "join_group": "Join Group",
     "check_update": "Check for Updates",
     "checking": "Checking...",
     "update_available": "Update Available",
@@ -410,8 +787,55 @@
     "connection_refused": "Connection refused. The proxy server may be unavailable.",
     "dns_error": "DNS resolution failed. Please check your DNS settings.",
     "proxy_error": "Proxy configuration error. Please check your system proxy settings.",
-    "rights_reserved": "All rights reserved.",
+    "rights_reserved": "All rights reserved, except as granted under the AGPLv3.",
     "made_with": "Made with",
-    "by_community": "by the SniShaper community"
+    "by_community": "by the SniShaper community",
+    "latest_beta": "Latest Beta",
+    "actions_build": "Actions build artifact",
+    "no_release_found": "No release in this channel",
+    "no_release_found_desc": "No version is available in the current channel yet. Try switching channels or retry later.",
+    "choose_download": "Choose Download Method",
+    "choose_download_desc": "Select the installation resource to download",
+    "no_assets": "No resources available",
+    "no_assets_desc": "This release does not provide .exe or .zip resources. Please download manually from GitHub.",
+    "open_github": "Open GitHub",
+    "asset_exe": "Installer (.exe)",
+    "asset_zip": "Portable Archive (.zip)",
+    "asset_7z": "Portable Archive (.7z, legacy)",
+    "asset_size": "Size",
+    "download": "Download",
+    "downloading": "Downloading",
+    "download_done": "Download Complete",
+    "install": "Install",
+    "install_confirm": "Download and install?",
+    "install_confirm_7z": "The archive will be extracted and overwrite the app directory. The app will close and restart automatically. Continue?",
+    "install_started": "Installer launched, follow the prompts to complete installation.",
+    "install_archive_started": "Preparing update, the app will close and restart automatically.",
+    "install_failed": "Install Failed",
+    "download_failed": "Download Failed",
+    "rate_limited": "GitHub API rate limit exceeded, please retry later.",
+    "api_error": "Failed to fetch version info from GitHub, please retry later.",
+    "dir_not_writable": "The application directory is not writable, overwrite update is unavailable. Use the .exe installer instead.",
+    "extract_failed": "Failed to extract the update package, please download again and retry.",
+    "bad_archive": "The update package is invalid, please download again and retry.",
+    "channel_alpha": "Alpha",
+    "channel_beta": "Beta",
+    "channel_rc": "RC",
+    "channel_stable": "Stable",
+    "restart_now": "Restart Now",
+    "restart_later": "Later",
+    "restart_to_update": "Restart to Update",
+    "restart_prompt_desc": "The new package has been downloaded. Restart now to apply the update?"
+  },
+  "window": {
+    "minimize": "Minimize",
+    "maximize_restore": "Maximize / Restore",
+    "close": "Close"
+  },
+  "modal": {
+    "close_dialog": "Close dialog"
+  },
+  "toast": {
+    "close_notification": "Dismiss notification"
   }
 }

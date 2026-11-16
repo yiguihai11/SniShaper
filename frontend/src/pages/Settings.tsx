@@ -1,56 +1,132 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  ShieldAlert,
-  Download,
-  FolderOpen,
-  RefreshCcw,
-  Monitor,
-  Anchor,
-  Cpu,
-  Globe,
-  BellRing,
-  Activity,
-  CloudLightning,
-  Zap,
-  Trash2,
-  AlertCircle,
-  Sun,
-  Moon
+  ShieldAlert, Download, FolderOpen, RefreshCcw, Monitor, Anchor,
+  Cpu, Globe, BellRing, Activity, Bolt, Delete,
+  AlertCircle, Sun, Moon, Wifi, FileText, Settings as SettingsIcon,
 } from '../lib/icons';
 import {
   GetListenPort, SetListenPort, GetCloseToTray, SetCloseToTray,
-  GetAutoStart, SetAutoStart, GetShowMainWindowOnAutoStart, SetShowMainWindowOnAutoStart,
+  GetAutoStart, SetAutoStart, GetAutoStartMethod, SetAutoStartMethod,
+  GetShowMainWindowOnAutoStart, SetShowMainWindowOnAutoStart,
   GetAutoEnableProxyOnAutoStart, SetAutoEnableProxyOnAutoStart,
-  GetSocks5Port, SetSocks5Port, GetTUNConfig, UpdateTUNConfig, GetTUNStatus,
+  GetAutoEnableSysProxyOnAutoStart, SetAutoEnableSysProxyOnAutoStart,
+  GetAutoUpdateRules, SetAutoUpdateRules,
+  GetTUNConfig, UpdateTUNConfig, GetTUNStatus,
   OpenCertDir, RegenerateCert, GetCAInstallStatus, GetInstalledCerts,
   UninstallCert, ExportConfig, ImportConfigWithSummary,
   GetCloudflareConfig, UpdateCloudflareConfig, GetCloudflareIPStats,
   ForceFetchCloudflareIPs, TriggerCFHealthCheck, RemoveInvalidCFIPs,
-  GetLanguage, SetLanguage
+  GetIPPools, UpdateIPPools,
+  GetLanguage, SetLanguage,
+  GetIPv6Available, RefreshIPv6Check,
+  GetLogFiles, OpenLogFile, CleanOldLogs,
+  GetUpdateChannel, SetUpdateChannel,
+  GetDownloadSource, SetDownloadSource,
+  GetCustomDownloadSource, SetCustomDownloadSource,
+  MeasureDownloadSources,
+  GetNetworkInterfaces, SetTUNInterface, SetTUNInterfaceExclude,
+  SetAppearanceMode,
 } from '../api/bindings';
-import { SettingRow, StackedSettingRow } from '../components/ui/Card';
-import { Button } from '../components/ui/Button';
-import { Toggle } from '../components/ui/Toggle';
-import { EmptyState } from '../components/ui/EmptyState';
+import {
+  Box, Button, TextField, Select, MenuItem, FormControl, InputLabel, Switch,
+  FormControlLabel, Tooltip, Typography, Stack, Grid, Badge, Divider, CircularProgress,
+  Autocomplete, Chip,
+} from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import { toast } from '../lib/toast';
 import { parseLatencyMs } from '../lib/utils';
 import { useTranslation } from '../i18n/I18nContext';
+import { useColorScheme } from '@mui/material';
+import { availableThemes } from '../theme';
 
 interface SettingsProps {
   cache: any;
   onCacheUpdate: (patch: any) => void;
-  theme: 'light' | 'dark';
-  toggleTheme: () => void;
+  currentThemeId: string;
+  onThemeChange: (id: string) => void;
 }
 
-const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggleTheme }) => {
+const SectionHeader = ({ icon, label, action }: { icon: React.ReactNode; label: string; action?: React.ReactNode }) => (
+  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1 }}>
+    <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+      {icon}
+      <Typography variant="body2" sx={{ fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {label}
+      </Typography>
+    </Stack>
+    {action}
+  </Box>
+);
+
+const SettingRowInline = ({ icon, title, desc, children }: { icon: React.ReactNode; title: string; desc?: string; children: React.ReactNode }) => (
+  <Box sx={{ p: 2.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 3 }}>
+    <Stack direction="row" spacing={1.5} sx={{ flex: 1, minWidth: 0 }}>
+      <Box sx={{ width: 40, height: 40, borderRadius: 1, bgcolor: 'primary.main', color: 'primary.contrastText', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        {icon}
+      </Box>
+      <Box sx={{ minWidth: 0, py: 0.25 }}>
+        <Typography variant="body2" sx={{ fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{title}</Typography>
+        {desc && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{desc}</Typography>}
+      </Box>
+    </Stack>
+    <Box sx={{ flexShrink: 0, outline: '1px solid transparent' }}>
+      {children}
+    </Box>
+  </Box>
+);
+
+const StackedRow = ({ icon, title, desc, children, ...rest }: { icon: React.ReactNode; title: string; desc?: string; children: React.ReactNode } & React.ComponentProps<typeof Box>) => (
+  <Box {...rest} sx={{ p: 2.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2 }}>
+    <Stack direction="row" spacing={1.5} sx={{ mb: desc ? 1.5 : 0, alignItems: 'center' }}>
+      <Box sx={{ width: 40, height: 40, borderRadius: 1, bgcolor: 'primary.main', color: 'primary.contrastText', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        {icon}
+      </Box>
+      <Box>
+        <Typography variant="body2" sx={{ fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{title}</Typography>
+        {desc && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{desc}</Typography>}
+      </Box>
+    </Stack>
+    {children}
+  </Box>
+);
+
+const UPDATE_CHANNELS = [
+  { value: 'alpha', labelKey: 'about.channel_alpha' },
+  { value: 'beta', labelKey: 'about.channel_beta' },
+  { value: 'rc', labelKey: 'about.channel_rc' },
+  { value: 'stable', labelKey: 'about.channel_stable' },
+];
+
+// 开机自启的注册方式；与后端 normalizeAutoStartMethod 的取值一致。
+const AUTO_START_METHODS = [
+  { value: 'task' },
+  { value: 'service' },
+  { value: 'registry' },
+];
+
+const DOWNLOAD_SOURCES = [
+  { value: 'smart', labelKey: 'settings.download_source.smart' },
+  { value: 'direct', labelKey: 'settings.download_source.direct' },
+  { value: 'down.mxw.qzz.io', label: 'down.mxw.qzz.io' },
+  { value: 'gh-proxy.org', label: 'gh-proxy.org' },
+  { value: 'v4.gh-proxy.org', label: 'v4.gh-proxy.org' },
+  { value: 'v6.gh-proxy.org', label: 'v6.gh-proxy.org' },
+  { value: 'cdn.gh-proxy.org', label: 'cdn.gh-proxy.org' },
+  { value: 'axisnow.gh-proxy.org', label: 'axisnow.gh-proxy.org' },
+  { value: 'custom', labelKey: 'settings.download_source.custom' },
+];
+
+const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, currentThemeId, onThemeChange }) => {
   const { t, language, setLanguage: setI18nLanguage } = useTranslation();
-  const [port, setPort] = useState(cache.port);
-  const [socks5Port, setSocks5Port] = useState(cache.socks5Port ?? '8081');
+  const { mode, setMode } = useColorScheme();
+  const [port, setPort] = useState(String(cache.port ?? ''));
   const [closeToTray, setCloseToTray] = useState(cache.closeToTray);
   const [autoStart, setAutoStart] = useState(cache.autoStart);
+  const [autoStartMethod, setAutoStartMethod] = useState(cache.autoStartMethod);
   const [showMainOnAutoStart, setShowMainOnAutoStart] = useState(cache.showMainOnAutoStart);
   const [autoEnableProxyOnAutoStart, setAutoEnableProxyOnAutoStart] = useState(cache.autoEnableProxyOnAutoStart);
+  const [autoEnableSysProxyOnAutoStart, setAutoEnableSysProxyOnAutoStart] = useState(cache.autoEnableSysProxyOnAutoStart);
+  const [autoUpdateRules, setAutoUpdateRules] = useState(cache.autoUpdateRules !== false);
   const [cfConfig, setCfConfig] = useState<any>(cache.cfConfig);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
@@ -60,6 +136,148 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
   const caStatus = cache.caStatus;
   const installedCerts = cache.installedCerts || [];
   const [ipStats, setIpStats] = useState<any[]>(cache.ipStats || []);
+  const [ipPools, setIpPools] = useState<any[]>(cache.ipPools || []);
+  const [newPoolName, setNewPoolName] = useState('');
+  const [newPoolIPs, setNewPoolIPs] = useState('');
+  const [isIpv6Checking, setIsIpv6Checking] = useState(false);
+  const ipv6Available = cache.ipv6Available !== false;
+  const [updateChannel, setUpdateChannel] = useState<string>(cache.updateChannel || 'stable');
+  const [downloadSource, setDownloadSource] = useState<string>(cache.downloadSource || 'down.mxw.qzz.io');
+  const [customSource, setCustomSource] = useState<string>(cache.customDownloadSource || '');
+  const [sourceResults, setSourceResults] = useState<any[]>([]);
+  const [measuring, setMeasuring] = useState<boolean>(false);
+  const [ifaces, setIfaces] = useState<any[]>([]);
+  const [outboundIface, setOutboundIface] = useState<string>('');
+  const [outboundExclude, setOutboundExclude] = useState<string[]>([]);
+  const [outboundExcludeInput, setOutboundExcludeInput] = useState<string>('');
+  const [tunStack, setTunStack] = useState<string>('gvisor');
+  const [adapterName, setAdapterName] = useState<string>('');
+  const [routeExclude, setRouteExclude] = useState<string>('');
+
+  const loadIfaces = useCallback(async () => {
+    try {
+      const [list, cfg] = await Promise.all([GetNetworkInterfaces(), GetTUNConfig()]);
+      setIfaces(Array.isArray(list) ? list : []);
+      const pick = (obj: any, snake: string, pascal: string) => obj?.[snake] ?? obj?.[pascal] ?? '';
+      setOutboundIface(String(pick(cfg, 'interface_name', 'InterfaceName') || ''));
+
+      setTunStack(String(pick(cfg, 'stack', 'Stack') || 'gvisor'));
+      setAdapterName(String(pick(cfg, 'adapter_name', 'AdapterName') || ''));
+
+      setOutboundExclude(
+        Array.isArray(cfg?.exclude_interface)
+          ? cfg.exclude_interface
+          : Array.isArray(cfg?.ExcludeInterfaces)
+            ? cfg.ExcludeInterfaces
+            : []
+      );
+      setOutboundExcludeInput('');
+
+      setRouteExclude(Array.isArray(cfg?.route_exclude_address)
+        ? cfg.route_exclude_address.join(',')
+        : Array.isArray(cfg?.RouteExcludeAddresses)
+          ? cfg.RouteExcludeAddresses.join(',')
+          : '');
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadIfaces();
+  }, [loadIfaces]);
+
+  const saveTUNField = useCallback(async (patch: any, successKey?: string) => {
+    try {
+      const cfg = await GetTUNConfig();
+      const merged = { ...(cfg || {}), ...patch };
+      await UpdateTUNConfig(merged);
+      if (successKey) toast.success(t(successKey));
+      await loadIfaces();
+    } catch (err: any) {
+      toast.error(t('common.failed'), String(err));
+    }
+  }, [loadIfaces]);
+  
+  // MUI 在 Select 菜单关闭后会把焦点交还给触发按钮，导致 InputLabel 一直保持
+  // shrink（收缩上移）状态，必须再点一下别处才复位。这里在 onClose 时主动失焦。
+  const blurSelectAfterClose = useCallback(() => {
+    window.setTimeout(() => {
+      const el = document.activeElement;
+      if (el instanceof HTMLElement) el.blur();
+    }, 0);
+  }, []);
+
+  const saveExclude = useCallback(async (values: string[]) => {
+    try {
+      // The backend expects a comma-separated string, so join the array before sending.
+      const excludeStr = values.join(',');
+      await SetTUNInterfaceExclude(excludeStr);
+      toast.success(t('settings.notifications.updated'));
+    } catch (err: any) {
+      toast.error(t('common.failed'), String(err));
+    }
+  }, []);
+
+  const measureSources = async () => {
+    if (measuring) return;
+    setMeasuring(true);
+    try {
+      const results = await MeasureDownloadSources();
+      setSourceResults(Array.isArray(results) ? results : []);
+    } catch (err: any) {
+      toast.error(t('common.failed'), String(err));
+    } finally {
+      setMeasuring(false);
+    }
+  };
+
+  const reloadIPPools = useCallback(async () => {
+    try {
+      const pools = await GetIPPools();
+      const list = Array.isArray(pools) ? pools : [];
+      setIpPools(list);
+      onCacheUpdate({ ipPools: list });
+    } catch {
+      /* ignore */
+    }
+  }, [onCacheUpdate]);
+
+  const handleAddPool = async () => {
+    const name = newPoolName.trim().toLowerCase();
+    const ips = newPoolIPs.split(/[\s,;]+/).map((s: string) => s.trim()).filter(Boolean);
+    if (!name || name === 'cloudflare') {
+      toast.error(t('common.failed'), t('settings.ip_pools.invalid_name'));
+      return;
+    }
+    if (ips.length === 0) {
+      toast.error(t('common.failed'), t('settings.ip_pools.no_ips'));
+      return;
+    }
+    if (ipPools.some((p: any) => p.name === name)) {
+      toast.error(t('common.failed'), t('settings.ip_pools.duplicate_name'));
+      return;
+    }
+    try {
+      await UpdateIPPools([...ipPools, { name, preferred_ips: ips, auto_update: false, api_key: '' }]);
+      setNewPoolName('');
+      setNewPoolIPs('');
+      toast.success(t('settings.ip_pools.added', { name }));
+      await reloadIPPools();
+    } catch (err: any) {
+      toast.error(t('common.failed'), String(err));
+    }
+  };
+
+  const handleRemovePool = async (name: string) => {
+    try {
+      await UpdateIPPools(ipPools.filter((p: any) => p.name !== name));
+      toast.success(t('settings.ip_pools.removed', { name }));
+      await reloadIPPools();
+    } catch (err: any) {
+      toast.error(t('common.failed'), String(err));
+    }
+  };
 
   const reloadCriticalData = useCallback(async () => {
     try {
@@ -74,12 +292,33 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
         cfConfig: cf || cache.cfConfig, caStatus: ca || cache.caStatus,
         installedCerts: certs || cache.installedCerts
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, [cache, onCacheUpdate]);
 
   useEffect(() => {
     reloadCriticalData();
+    reloadIPPools();
     TriggerCFHealthCheck().catch(console.error);
+    GetUpdateChannel().then((c) => {
+      if (c) {
+        setUpdateChannel(c);
+        onCacheUpdate({ updateChannel: c });
+      }
+    }).catch(() => {});
+    GetDownloadSource().then((s) => {
+      if (s) {
+        setDownloadSource(s);
+        onCacheUpdate({ downloadSource: s });
+      }
+    }).catch(() => {});
+    GetCustomDownloadSource().then((s) => {
+      if (s) {
+        setCustomSource(s);
+        onCacheUpdate({ customDownloadSource: s });
+      }
+    }).catch(() => {});
     const ipTimer = setInterval(async () => {
       const stats = await GetCloudflareIPStats();
       if (stats) setIpStats(stats);
@@ -87,28 +326,61 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
     return () => clearInterval(ipTimer);
   }, []);
 
-  const handleSavePort = async () => {
-    await SetListenPort(port);
-    onCacheUpdate({ port });
-    toast.success(t('proxies.notifications.updated'), `${t('settings.http_port')} ${port}`);
+  const handleChannelChange = async (value: string) => {
+    const prev = updateChannel;
+    setUpdateChannel(value);
+    try {
+      await SetUpdateChannel(value);
+      onCacheUpdate({ updateChannel: value });
+      toast.success(t('settings.notifications.updated'));
+    } catch (err: any) {
+      setUpdateChannel(prev);
+      toast.error(t('common.failed'), String(err));
+    }
   };
 
-  const handleSaveSocks5Port = async (val: string) => {
-    const normalized = val.trim();
-    if (!normalized) return;
-    setSocks5Port(normalized);
+  const handleDownloadSourceChange = async (value: string) => {
+    const prev = downloadSource;
+    setDownloadSource(value);
     try {
-      await SetSocks5Port(normalized);
-      onCacheUpdate({ socks5Port: normalized });
-      toast.success(t('proxies.notifications.updated'));
-    } catch (err: any) { toast.error(t('common.failed'), String(err)); }
+      await SetDownloadSource(value);
+      onCacheUpdate({ downloadSource: value });
+      toast.success(t('settings.notifications.updated'));
+    } catch (err: any) {
+      setDownloadSource(prev);
+      toast.error(t('common.failed'), String(err));
+    }
+  };
+
+  const handleCustomSourceSave = async () => {
+    const prev = customSource;
+    try {
+      await SetCustomDownloadSource(customSource.trim());
+      onCacheUpdate({ customDownloadSource: customSource.trim() });
+      toast.success(t('settings.notifications.updated'));
+    } catch (err: any) {
+      setCustomSource(prev);
+      toast.error(t('common.failed'), String(err));
+    }
+  };
+
+  const handleSavePort = async () => {
+    const parsed = parseInt(port, 10);
+    if (!port || Number.isNaN(parsed) || parsed < 1 || parsed > 65535) {
+      setPort(String(cache.port ?? ''));
+      toast.error(t('common.failed'), t('settings.notifications.port_invalid'));
+      return;
+    }
+    await SetListenPort(parsed);
+    onCacheUpdate({ port: parsed });
+    toast.success(t('settings.notifications.updated'), `${t('settings.port_label')} ${parsed}`);
   };
 
   const handleToggleTray = async (val: boolean) => {
     setCloseToTray(val);
     await SetCloseToTray(val);
     onCacheUpdate({ closeToTray: val });
-    toast.success(t('proxies.notifications.updated'));
+    toast.success(t('settings.notifications.updated'));
   };
 
   const handleToggleAutoStart = async (val: boolean) => {
@@ -116,8 +388,18 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
     try {
       await SetAutoStart(val);
       onCacheUpdate({ autoStart: val });
-      toast.success(t('proxies.notifications.updated'));
+      toast.success(t('settings.notifications.updated'));
     } catch (err: any) { setAutoStart(!val); toast.error(t('common.failed'), String(err)); }
+  };
+
+  const handleSetAutoStartMethod = async (val: string) => {
+    const prev = autoStartMethod;
+    setAutoStartMethod(val);
+    try {
+      await SetAutoStartMethod(val);
+      onCacheUpdate({ autoStartMethod: val });
+      toast.success(t('settings.notifications.updated'));
+    } catch (err: any) { setAutoStartMethod(prev); toast.error(t('common.failed'), String(err)); }
   };
 
   const handleToggleAutoEnableProxyOnAutoStart = async (val: boolean) => {
@@ -125,8 +407,26 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
     try {
       await SetAutoEnableProxyOnAutoStart(val);
       onCacheUpdate({ autoEnableProxyOnAutoStart: val });
-      toast.success(t('proxies.notifications.updated'));
+      toast.success(t('settings.notifications.updated'));
     } catch (err: any) { setAutoEnableProxyOnAutoStart(!val); toast.error(t('common.failed'), String(err)); }
+  };
+
+  const handleToggleAutoEnableSysProxyOnAutoStart = async (val: boolean) => {
+    setAutoEnableSysProxyOnAutoStart(val);
+    try {
+      await SetAutoEnableSysProxyOnAutoStart(val);
+      onCacheUpdate({ autoEnableSysProxyOnAutoStart: val });
+      toast.success(t('settings.notifications.updated'));
+    } catch (err: any) { setAutoEnableSysProxyOnAutoStart(!val); toast.error(t('common.failed'), String(err)); }
+  };
+
+  const handleToggleAutoUpdateRules = async (val: boolean) => {
+    setAutoUpdateRules(val);
+    try {
+      await SetAutoUpdateRules(val);
+      onCacheUpdate({ autoUpdateRules: val });
+      toast.success(t('settings.notifications.updated'));
+    } catch (err: any) { setAutoUpdateRules(!val); toast.error(t('common.failed'), String(err)); }
   };
 
   const handleToggleShowMainWindowOnAutoStart = async (val: boolean) => {
@@ -134,7 +434,7 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
     try {
       await SetShowMainWindowOnAutoStart(val);
       onCacheUpdate({ showMainOnAutoStart: val });
-      toast.success(t('proxies.notifications.updated'));
+      toast.success(t('settings.notifications.updated'));
     } catch (err: any) { setShowMainOnAutoStart(!val); toast.error(t('common.failed'), String(err)); }
   };
 
@@ -153,6 +453,16 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
       toast.success(t('settings.cf_pool.fetch_now'));
     } catch (err: any) { toast.error(t('common.failed'), String(err?.message || err));
     } finally { setIsRefreshing(false); }
+  };
+
+  const handleRefreshIPv6 = async () => {
+    setIsIpv6Checking(true);
+    try {
+      const available = await RefreshIPv6Check();
+      onCacheUpdate({ ipv6Available: available === true });
+      toast[available ? 'success' : 'error'](available ? t('network.ipv6_ok') : t('network.ipv6_disabled_title'), available ? t('network.ipv6_ok_desc') : t('network.ipv6_disabled_desc'));
+    } catch (err: any) { toast.error(t('common.failed'), String(err));
+    } finally { setIsIpv6Checking(false); }
   };
 
   const handleHealthCheck = async () => {
@@ -187,204 +497,864 @@ const Settings: React.FC<SettingsProps> = ({ cache, onCacheUpdate, theme, toggle
     } finally { setIsCertBusy(false); }
   };
 
+  const [logFiles, setLogFiles] = useState<any[]>([]);
+  const [isCleaningLogs, setIsCleaningLogs] = useState(false);
+
+  const loadLogFiles = useCallback(async () => {
+    try {
+      const files = await GetLogFiles();
+      setLogFiles(files || []);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { void loadLogFiles(); }, [loadLogFiles]);
+
+  const handleViewLog = (name: string) => { OpenLogFile(name); };
+
+  const handleCleanLogs = async () => {
+    setIsCleaningLogs(true);
+    try {
+      const removed = await CleanOldLogs();
+      await loadLogFiles();
+      toast.success(t('settings.logs.clean_done', { count: removed ?? 0 }));
+    } catch (err: any) { toast.error(t('common.failed'), String(err));
+    } finally { setIsCleaningLogs(false); }
+  };
+
+  const fmtLogDate = (name: string) => name.replace(/\.log$/i, '').replace('_', ' ');
+  const fmtLogSize = (bytes: number) =>
+    bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+      : bytes >= 1024 ? `${(bytes / 1024).toFixed(0)} KB`
+        : `${bytes} B`;
+
+  const bgColor = 'action.hover';
+
+  const channelKey = 'settings.update_channel.' + updateChannel;
+  const channelDesc = t(channelKey) === channelKey ? t('settings.update_channel.stable') : t(channelKey);
+
+  // 动态 key 缺失守卫：未知值回退到通用描述，避免渲染原始 key。
+  const methodDescKey = `settings.auto_start_method.${autoStartMethod}.desc`;
+  const autoStartMethodDesc = t(methodDescKey) === methodDescKey ? t('settings.auto_start_method.desc') : t(methodDescKey);
+
+  // Render a single network interface option; shared by the outbound iface and exclude iface lists.
+  const renderInterfaceOption = (nic: any) => (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
+      <span>{nic.name}</span>
+      <Typography variant="caption" color={nic.physical ? 'success.main' : 'text.secondary'}>
+        {nic.physical ? t('settings.tun.outbound_iface.physical') : t('settings.tun.outbound_iface.virtual')}
+      </Typography>
+      {nic.default_route && (
+        <Typography variant="caption" color="primary.main">
+          {t('settings.tun.outbound_iface.default_route')}
+        </Typography>
+      )}
+      {nic.current_outbound && (
+        <Typography variant="caption" color="warning.main">
+          {t('settings.tun.outbound_iface.in_use')}
+        </Typography>
+      )}
+    </Box>
+  );
+
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-      <header>
-        <h1 className="text-3xl font-black tracking-tighter">{t('settings.title')}</h1>
-      </header>
+    <Box sx={{ flexGrow: 1, minHeight: 0, width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Box sx={{ pt: 4, flexShrink: 0, display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'flex-end' }, gap: 2, mb: 6 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ p: 1.25, borderRadius: 1.5, border: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), borderColor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+            <SettingsIcon size={20} />
+          </Box>
+          <Typography variant="h5" sx={{ fontWeight: 700, letterSpacing: '-0.02em' }}>
+            {t('settings.title')}
+          </Typography>
+        </Box>
+      </Box>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-8">
-          <section className="space-y-4">
-            <div className="flex items-center gap-2 px-1 text-text-secondary">
-              <Anchor size={18} aria-hidden />
-              <h2 className="text-sm font-bold uppercase tracking-wider">{t('settings.tabs.general')}</h2>
-            </div>
+      <Box sx={{ flexGrow: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', width: '100%', pb: 6 }}>
+      <Grid container spacing={3}>
+        <Grid size={{ xs: 12, lg: 6 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <SectionHeader icon={<Anchor size={18} />} label={t('settings.tabs.general')} />
 
-            <div className="space-y-4">
-              <SettingRow icon={<Monitor size={20} />}>
-                <div className="flex flex-col gap-3">
-                  <div className="flex items-center gap-2">
-                    <label htmlFor="http-port" className="text-[10px] text-text-secondary font-bold w-12">{t('settings.http_port')}</label>
-                    <input
-                      id="http-port"
-                      type="number"
-                      value={port}
-                      onChange={(e) => setPort(parseInt(e.target.value))}
-                      className="w-20 bg-background-soft border border-border px-3 py-1.5 rounded-xl text-sm font-bold focus:ring-2 focus:ring-accent outline-none"
-                    />
-                    <Button onClick={handleSavePort} size="xs">{t('common.apply')}</Button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label htmlFor="socks5-port" className="text-[10px] text-text-secondary font-bold w-12">SOCKS5</label>
-                    <input
-                      id="socks5-port"
-                      type="text"
-                      value={socks5Port}
-                      onChange={(e) => setSocks5Port(e.target.value)}
-                      onBlur={(e) => handleSaveSocks5Port(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                      className="w-20 bg-background-soft border border-border px-3 py-1.5 rounded-xl text-sm font-bold focus:ring-2 focus:ring-accent outline-none"
-                      placeholder="8081"
-                    />
-                  </div>
-                </div>
-              </SettingRow>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <SettingRowInline icon={<Monitor size={18} />} title={t('settings.port_title')} desc={t('settings.port_desc')}>
+                <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
+                  <TextField
+                    label={t('settings.port_label')}
+                    type="text"
+                    size="small"
+                    value={port}
+                    onChange={(e) => setPort(e.target.value.replace(/\D/g, '').slice(0, 5))}
+                    sx={{ width: 120, '& input': { fontSize: '0.875rem', textAlign: 'center' } }}
+                  />
+                  <Button size="small" variant="contained" color="primary" onClick={handleSavePort}>
+                    {t('common.apply')}
+                  </Button>
+                </Stack>
+              </SettingRowInline>
 
-              <SettingRow title={t('settings.min_to_tray.title')} desc={t('settings.min_to_tray.desc')} icon={<BellRing size={20} />}>
-                <Toggle checked={closeToTray} onChange={handleToggleTray} />
-              </SettingRow>
+              <SettingRowInline title={t('settings.min_to_tray.title')} desc={t('settings.min_to_tray.desc')} icon={<BellRing size={18} />}>
+                <FormControlLabel
+                  control={
+                    <Switch checked={closeToTray} onChange={(e) => handleToggleTray(e.target.checked)} />
+                  }
+                  label={t('settings.min_to_tray.title')}
+                  sx={{ gap: 1, marginLeft: 0, marginRight: 0 }}
+                />
+              </SettingRowInline>
 
-              <SettingRow title={t('settings.language.title')} desc={t('settings.language.desc')} icon={<Globe size={20} />}>
-                <div className="flex p-1 bg-background-soft rounded-xl border border-border" role="radiogroup" aria-label="选择语言">
+              <SettingRowInline title={t('settings.tutorial.title')} desc={t('settings.tutorial.desc')} icon={<RefreshCcw size={18} />}>
+                <Button size="small" variant="outlined" color="primary" onClick={() => window.dispatchEvent(new CustomEvent('app:restart-tutorial'))}>
+                  {t('settings.tutorial.replay')}
+                </Button>
+              </SettingRowInline>
+
+              <SettingRowInline title={t('settings.language.title')} desc={t('settings.language.desc')} icon={<Globe size={18} />}>
+                <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', bgcolor: bgColor, border: 1, borderColor: 'divider', borderRadius: 2, p: 0.5 }} role="radiogroup" aria-label={t('settings.select_language')}>
                   {(['zh', 'en', 'ru'] as const).map((lang) => (
-                    <button
+                    <Box
                       key={lang}
+                      component="button"
+                      type="button"
+                      sx={{
+                        px: 1.5,
+                        py: 0.5,
+                        fontSize: '0.75rem',
+                        fontWeight: 'bold',
+                        borderRadius: 1,
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: language === lang ? '#fff' : 'text.secondary',
+                        bgcolor: language === lang ? 'primary.main' : 'transparent',
+                        '&:hover': { color: 'text.primary' },
+                      }}
                       onClick={() => handleLanguageChange(lang)}
                       role="radio"
                       aria-checked={language === lang}
-                      className={`px-3 py-1 text-[11px] font-bold rounded-lg transition-all ${language === lang ? 'bg-accent text-white shadow-sm' : 'text-text-secondary hover:text-text-primary'}`}
                     >
                       {lang === 'zh' ? '中文' : lang === 'en' ? 'English' : 'Русский'}
-                    </button>
+                    </Box>
                   ))}
-                </div>
-              </SettingRow>
+                </Stack>
+              </SettingRowInline>
 
-              <SettingRow title={t('settings.appearance.title')} desc={t('settings.appearance.desc')} icon={theme === 'light' ? <Sun size={20} /> : <Moon size={20} />}>
-                <div className="flex p-1 bg-background-soft rounded-xl border border-border" role="radiogroup" aria-label="选择主题">
-                  <button
-                    onClick={() => theme === 'dark' && toggleTheme()}
+              <SettingRowInline title={t('settings.appearance.title')} desc={t('settings.appearance.desc')} icon={mode === 'light' ? <Sun size={18} /> : <Moon size={18} />}>
+                <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', bgcolor: bgColor, border: 1, borderColor: 'divider', borderRadius: 2, p: 0.5 }} role="radiogroup" aria-label={t('settings.select_theme')}>
+                  <Box
+                    component="button"
+                    type="button"
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.25,
+                      px: 1.5,
+                      py: 0.75,
+                      fontSize: '0.75rem',
+                      fontWeight: 'bold',
+                      borderRadius: 1,
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: mode === 'light' ? '#fff' : 'text.secondary',
+                      bgcolor: mode === 'light' ? 'primary.main' : 'transparent',
+                      '&:hover': { color: 'text.primary' },
+                    }}
+                    onClick={() => { setMode('light'); SetAppearanceMode('light').catch(() => {}); }}
                     role="radio"
-                    aria-checked={theme === 'light'}
-                    className={`flex items-center gap-2 px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all ${theme === 'light' ? 'bg-white text-accent shadow-sm' : 'text-text-secondary hover:text-text-primary'}`}
+                    aria-checked={mode === 'light'}
                   >
-                    <Sun size={14} aria-hidden />
+                    <Sun size={14} />
                     {t('settings.appearance.light')}
-                  </button>
-                  <button
-                    onClick={() => theme === 'light' && toggleTheme()}
+                  </Box>
+                  <Box
+                    component="button"
+                    type="button"
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.25,
+                      px: 1.5,
+                      py: 0.75,
+                      fontSize: '0.75rem',
+                      fontWeight: 'bold',
+                      borderRadius: 1,
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: mode === 'dark' ? '#fff' : 'text.secondary',
+                      bgcolor: mode === 'dark' ? 'primary.main' : 'transparent',
+                      '&:hover': { color: 'text.primary' },
+                    }}
+                    onClick={() => { setMode('dark'); SetAppearanceMode('dark').catch(() => {}); }}
                     role="radio"
-                    aria-checked={theme === 'dark'}
-                    className={`flex items-center gap-2 px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all ${theme === 'dark' ? 'bg-accent text-white shadow-sm' : 'text-text-secondary hover:text-text-primary'}`}
+                    aria-checked={mode === 'dark'}
                   >
-                    <Moon size={14} aria-hidden />
+                    <Moon size={14} />
                     {t('settings.appearance.dark')}
-                  </button>
-                </div>
-              </SettingRow>
-            </div>
-          </section>
+                  </Box>
+                  <Box
+                    component="button"
+                    type="button"
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.25,
+                      px: 1.5,
+                      py: 0.75,
+                      fontSize: '0.75rem',
+                      fontWeight: 'bold',
+                      borderRadius: 1,
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: mode === 'system' ? '#fff' : 'text.secondary',
+                      bgcolor: mode === 'system' ? 'primary.main' : 'transparent',
+                      '&:hover': { color: 'text.primary' },
+                    }}
+                    onClick={() => { setMode('system'); SetAppearanceMode('system').catch(() => {}); }}
+                    role="radio"
+                    aria-checked={mode === 'system'}
+                  >
+                    <Monitor size={14} />
+                    {t('settings.appearance.system')}
+                  </Box>
+                </Stack>
+              </SettingRowInline>
 
-          <section className="space-y-4">
-            <div className="flex items-center gap-2 px-1 text-text-secondary">
-              <Cpu size={18} aria-hidden />
-              <h2 className="text-sm font-bold uppercase tracking-wider">{t('settings.tabs.startup')}</h2>
-            </div>
-            <div className="space-y-4">
-              <SettingRow title={t('settings.auto_start.title')} desc={t('settings.auto_start.desc')} icon={<Cpu size={20} />}>
-                <Toggle checked={autoStart} onChange={handleToggleAutoStart} />
-              </SettingRow>
-              <SettingRow title={t('settings.auto_proxy.title')} desc={t('settings.auto_proxy.desc')} icon={<Activity size={20} />}>
-                <Toggle checked={autoEnableProxyOnAutoStart} onChange={handleToggleAutoEnableProxyOnAutoStart} />
-              </SettingRow>
-              <SettingRow title={t('settings.show_main.title')} desc={t('settings.show_main.desc')} icon={<Monitor size={20} />}>
-                <Toggle checked={showMainOnAutoStart} onChange={handleToggleShowMainWindowOnAutoStart} />
-              </SettingRow>
-            </div>
-          </section>
-        </div>
+              <SettingRowInline title={t('settings.theme.label')} desc={t('settings.theme.desc')} icon={<Monitor size={18} />}>
+                <Box sx={{ width: 220, flexShrink: 0 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="theme-select-label">{t('settings.theme.label')}</InputLabel>
+                    <Select
+                      labelId="theme-select-label"
+                      id="theme-select"
+                      value={currentThemeId}
+                      label={t('settings.theme.label')}
+                      onChange={(e) => onThemeChange(e.target.value)}
+                    >
+                      {availableThemes.map((th) => (
+                        <MenuItem key={th.id} value={th.id}>
+                          {t(th.nameKey)}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+              </SettingRowInline>
 
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1 text-text-secondary">
-            <ShieldAlert size={18} aria-hidden />
-            <h2 className="text-sm font-bold uppercase tracking-wider">{t('settings.tabs.security')}</h2>
-          </div>
-          <div className="grid grid-cols-1 gap-4">
-            <SettingRow title={t('settings.ca_management.reset')} desc={t('settings.ca_management.reset_hint')} icon={<RefreshCcw size={20} />}>
-              <Button onClick={handleRegenerateCert} loading={isCertBusy} variant="outline" size="sm">
-                {isCertBusy ? t('ech_form.probing') : t('common.apply')}
-              </Button>
-            </SettingRow>
-            <SettingRow title={t('settings.ca_management.export')} desc={caStatus?.CertPath || undefined} icon={<FolderOpen size={20} />}>
-              <Button onClick={() => OpenCertDir()} variant="ghost" size="sm" icon={<FolderOpen size={14} />}>
-                {t('common.view')}
-              </Button>
-            </SettingRow>
-          </div>
+              <SettingRowInline title={t('settings.update_channel.title')} desc={channelDesc} icon={<Download size={18} />}>
+                <Box sx={{ width: 240, flexShrink: 0 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="update-channel-label">{t('settings.update_channel.title')}</InputLabel>
+                    <Select
+                      labelId="update-channel-label"
+                      id="update-channel-select"
+                      value={updateChannel}
+                      label={t('settings.update_channel.title')}
+                      onChange={(e) => handleChannelChange(e.target.value)}
+                    >
+                      {UPDATE_CHANNELS.map((ch) => {
+                        const translated = t(ch.labelKey);
+                        return (
+                          <MenuItem key={ch.value} value={ch.value}>
+                            {translated !== ch.labelKey ? translated : ch.value}
+                          </MenuItem>
+                        );
+                      })}
+                    </Select>
+                  </FormControl>
+                </Box>
+              </SettingRowInline>
 
-          <StackedSettingRow title={t('settings.ca_management.title')} desc={caStatus?.Installed ? t('dashboard.cert_installed') : t('dashboard.cert_not_installed')} icon={<ShieldAlert size={20} />}>
-            <div className="space-y-3">
-              <div className={`text-[11px] font-bold ${caStatus?.Installed ? 'text-success' : 'text-text-muted'}`}>
-                {caStatus?.Installed ? `${installedCerts.length} CERTS` : t('common.off')}
-              </div>
-              {installedCerts.length === 0 ? (
-                <EmptyState icon={<ShieldAlert size={32} />} title={t('proxies.no_ech')} />
-              ) : (
-                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                  {installedCerts.map((cert: any) => (
-                    <div key={cert.token} className="flex items-center justify-between gap-4 rounded-2xl border border-border/40 bg-background-card px-5 py-4">
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="text-xs font-bold break-all">{cert.subject}</div>
-                        <div className="text-[10px] text-text-muted break-all">{cert.storeLocation} / {cert.storeName} / {cert.thumbprint}</div>
-                      </div>
-                      <Button onClick={() => handleUninstallCert(cert.token)} disabled={isCertBusy} variant="danger" size="sm" icon={<Trash2 size={12} />}>
-                        {t('common.delete')}
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </StackedSettingRow>
-        </section>
-
-        <section className="lg:col-span-2 space-y-4">
-          <div className="flex items-center justify-between px-1 text-text-secondary">
-            <div className="flex items-center gap-2">
-              <CloudLightning size={18} aria-hidden />
-              <h2 className="text-sm font-bold uppercase tracking-wider">{t('rules.form.cf_pool')}</h2>
-            </div>
-            <Button onClick={handleHealthCheck} loading={isCheckingHealth} variant="ghost" size="xs" disabled={isCheckingHealth}>
-              {isCheckingHealth ? t('ech_form.probing') : t('dns.test')}
-            </Button>
-          </div>
-
-          <div className="bg-background-card border border-border rounded-2xl overflow-hidden">
-            <div className="grid grid-cols-1 md:grid-cols-5">
-              <div className="md:col-span-1 p-6 border-r border-border flex flex-col justify-center items-center">
-                <Button onClick={handleFetchIPs} loading={isRefreshing} icon={isRefreshing ? undefined : <Download size={14} />} className="w-full">
-                  {t('settings.cf_pool.fetch_now')}
-                </Button>
-              </div>
-              <div className="md:col-span-4 p-6 bg-background-soft/30">
-                <div className="flex items-center justify-between mb-4 px-2">
-                  <h3 className="text-[10px] font-black uppercase text-text-muted tracking-widest">IP POOL ({ipStats.length})</h3>
-                  <Zap size={14} className="text-warning animate-pulse" aria-hidden />
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[320px] overflow-y-auto px-2 pb-4 scrollbar-thin">
-                  {ipStats.length === 0 ? (
-                    <EmptyState icon={<AlertCircle size={32} />} title={t('rules.form.no_domains')} className="col-span-full" />
-                  ) : (
-                    ipStats.map((ip: any, i: number) => (
-                      <div key={i} className="flex items-center justify-between p-3 bg-background-card border border-border/60 rounded-2xl shadow-sm hover:border-accent/30 transition-all group">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-2 h-2 rounded-full ${parseLatencyMs(ip.latency) > 0 ? "bg-success shadow-[0_0_8px_rgba(34,197,94,0.5)]" : "bg-danger"}`} />
-                          <span className="text-xs font-mono font-bold">{ip.ip}</span>
-                        </div>
-                        <span className={`text-[10px] font-black ${parseLatencyMs(ip.latency) > 0 && parseLatencyMs(ip.latency) < 200 ? "text-success" : "text-warning"}`}>
-                          {ip.latency ? `${Math.round(parseLatencyMs(ip.latency))}ms` : "---"}
-                        </span>
-                      </div>
-                    ))
+              <SettingRowInline title={t('settings.download_source.title')} desc={t('settings.download_source.desc')} icon={<Globe size={18} />}>
+                <Box sx={{ width: 320, flexShrink: 0 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="download-source-label">{t('settings.download_source.title')}</InputLabel>
+                    <Select
+                      labelId="download-source-label"
+                      id="download-source-select"
+                      value={downloadSource}
+                      label={t('settings.download_source.title')}
+                      onChange={(e) => handleDownloadSourceChange(e.target.value)}
+                    >
+                      {DOWNLOAD_SOURCES.map((src) => {
+                        let label = src.value;
+                        if (src.label) {
+                          label = src.label;
+                        } else if (src.labelKey) {
+                          const translated = t(src.labelKey);
+                          if (translated !== src.labelKey) label = translated;
+                        }
+                        return (
+                          <MenuItem key={src.value} value={src.value}>
+                            {label}
+                          </MenuItem>
+                        );
+                      })}
+                    </Select>
+                  </FormControl>
+                  {downloadSource === 'custom' && (
+                    <TextField
+                      size="small"
+                      fullWidth
+                      sx={{ mt: 1 }}
+                      placeholder={t('settings.download_source.custom_placeholder')}
+                      value={customSource}
+                      onChange={(e) => setCustomSource(e.target.value)}
+                      onBlur={handleCustomSourceSave}
+                    />
                   )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
-    </div>
+                  <Button size="small" sx={{ mt: 1 }} startIcon={<Activity size={14} />} onClick={measureSources} disabled={measuring}>
+                    {measuring ? t('settings.download_source.measuring') : t('settings.download_source.measure')}
+                  </Button>
+                  {sourceResults.length > 0 && (
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 1 }}>
+                      {sourceResults.map((r) => (
+                        <Box
+                          key={r.name}
+                          component="span"
+                          sx={{
+                            px: 0.75, py: 0.25, borderRadius: '999px', fontSize: '0.6875rem',
+                            bgcolor: (theme) => alpha(theme.palette[r.ok ? 'success' : 'error'].main, 0.12),
+                            color: r.ok ? 'success.main' : 'error.main',
+                          }}
+                        >
+                          {r.name} {r.ok ? `${r.latency_ms}ms` : t('settings.download_source.unreachable')}
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+              </SettingRowInline>
+              <SettingRowInline title={t('settings.auto_update_rules.title')} desc={t('settings.auto_update_rules.desc')} icon={<RefreshCcw size={18} />}>
+                <FormControlLabel
+                  control={<Switch checked={autoUpdateRules} onChange={(e) => handleToggleAutoUpdateRules(e.target.checked)} />}
+                  label={t('settings.auto_update_rules.title')}
+                  sx={{ gap: 1, marginLeft: 0, marginRight: 0 }}
+                />
+              </SettingRowInline>
+            </Box>
+          </Box>
+
+          <Box data-tut="tun-section" sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mt: 1.5 }}>
+            <SectionHeader icon={<Wifi size={18} />} label={t('settings.tabs.tun')} />
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <SettingRowInline
+                title={t('settings.tun.outbound_iface.title')}
+                desc={t('settings.tun.outbound_iface.desc')}
+                icon={<Wifi size={18} />}
+              >
+                <Box sx={{ width: 320, flexShrink: 0 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="tun-outbound-iface-label">{t('settings.tun.outbound_iface.title')}</InputLabel>
+                    <Select
+                      labelId="tun-outbound-iface-label"
+                      id="tun-outbound-iface"
+                      value={outboundIface}
+                      label={t('settings.tun.outbound_iface.title')}
+                      onClose={blurSelectAfterClose}
+                      onChange={(e) => {
+                        const value = String(e.target.value);
+                        setOutboundIface(value);
+                        SetTUNInterface(value).catch((err: any) => {
+                          toast.error(t('common.failed'), String(err));
+                        });
+                      }}
+                    >
+                      <MenuItem value="">{t('settings.tun.outbound_iface.auto')}</MenuItem>
+                      {ifaces.map((nic) => (
+                        <MenuItem key={`${nic.name}-${nic.index}`} value={nic.name}>
+                          {renderInterfaceOption(nic)}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Autocomplete
+                    multiple
+                    freeSolo
+                    size="small"
+                    fullWidth
+                    sx={{ mt: 1 }}
+                    options={ifaces.map((nic) => nic.name)}
+                    value={outboundExclude}
+                    inputValue={outboundExcludeInput}
+                    onInputChange={(_, newInputValue) => {
+                      // Controlled input: keep the text field content in sync so we can handle unsubmitted text on blur.
+                      setOutboundExcludeInput(newInputValue);
+                    }}
+                    onChange={(_, newValue) => {
+                      setOutboundExclude(newValue as string[]);
+                      // Clear the input after a tag is selected/created.
+                      setOutboundExcludeInput('');
+                    }}
+                    onBlur={() => {
+                      const raw = outboundExcludeInput.trim();
+                      if (raw) {
+                        // Support comma and full-width comma as separators; split into multiple tags at once.
+                        const parts = raw.split(/[,，]+/).map((s) => s.trim()).filter(Boolean);
+                        const merged = [...outboundExclude];
+                        for (const p of parts) {
+                          if (!merged.includes(p)) merged.push(p);
+                        }
+                        if (merged.length !== outboundExclude.length) {
+                          setOutboundExclude(merged);
+                          setOutboundExcludeInput('');
+                          saveExclude(merged);
+                          return;
+                        }
+                      }
+                      // No new content; just persist the current tags.
+                      saveExclude(outboundExclude);
+                    }}
+                    // To make Autocomplete match the Select styling: slotProps.popper is the only
+                    // channel that can reach the Portal-rendered dropdown whose inline width is
+                    // hard-coded by JS. width:max-content overrides that inline width so the menu
+                    // grows with its content; the Paper layer must also be overridden or the
+                    // white panel will still be narrow.
+                    slotProps={{
+                      popper: {
+                        sx: {
+                          width: 'max-content !important',
+                          '& .MuiAutocomplete-paper': {
+                            width: 'max-content',
+                            minWidth: 320,
+                          },
+                        },
+                      },
+                    }}
+                    renderValue={(value: string[], getItemProps) =>
+                      value.map((option: string, index: number) => (
+                        <Chip
+                          variant="outlined"
+                          label={option}
+                          size="small"
+                          {...getItemProps({ index })}
+                        />
+                      ))
+                    }
+                    renderOption={(props, option) => {
+                      const nic = ifaces.find((n) => n.name === option);
+                      return (
+                        <Box component="li" {...props}>
+                          {nic ? renderInterfaceOption(nic) : option}
+                        </Box>
+                      );
+                    }}
+                    renderInput={(params) => {
+                      // Validation for committed tags: must contain no "*" and must exist in the system NIC list.
+                      const tagsInvalid = outboundExclude.some(
+                        (val) => !val.includes('*') && !ifaces.some((nic) => nic.name === val)
+                      );
+                      const hasInvalidInput = tagsInvalid;
+                      return (
+                        <TextField
+                          {...params}
+                          label={t('settings.tun.outbound_exclude.label')}
+                          placeholder={t('settings.tun.outbound_exclude.placeholder')}
+                          error={hasInvalidInput}
+                          helperText={
+                            hasInvalidInput
+                              ? t('settings.tun.outbound_exclude.error')
+                              : t('settings.tun.outbound_exclude.hint')
+                          }
+                        />
+                      );
+                    }}
+                  />
+                </Box>
+              </SettingRowInline>
+
+              <SettingRowInline
+                title={t('settings.tun.stack.title')}
+                desc={t('settings.tun.stack.desc')}
+                icon={<SettingsIcon size={18} />}
+              >
+                <Box sx={{ width: 220, flexShrink: 0 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="tun-stack-label">{t('settings.tun.stack.title')}</InputLabel>
+                    <Select
+                      labelId="tun-stack-label"
+                      id="tun-stack"
+                      value={tunStack}
+                      label={t('settings.tun.stack.title')}
+                      onClose={blurSelectAfterClose}
+                      onChange={(e) => {
+                        const value = String(e.target.value);
+                        setTunStack(value);
+                        saveTUNField({ stack: value });
+                      }}
+                    >
+                      <MenuItem value="gvisor">{t('settings.tun.stack.gvisor')}</MenuItem>
+                      <MenuItem value="mixed">{t('settings.tun.stack.mixed')}</MenuItem>
+                      <MenuItem value="system">{t('settings.tun.stack.system')}</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Box>
+              </SettingRowInline>
+
+              <SettingRowInline
+                title={t('settings.tun.adapter_name.title')}
+                desc={t('settings.tun.adapter_name.desc')}
+                icon={<SettingsIcon size={18} />}
+              >
+                <Box sx={{ width: 220, flexShrink: 0 }}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="SniShaper"
+                    value={adapterName}
+                    onChange={(e) => setAdapterName(e.target.value)}
+                    onBlur={() => saveTUNField({ adapter_name: adapterName.trim() })}
+                  />
+                </Box>
+              </SettingRowInline>
+
+              <SettingRowInline
+                title={t('settings.tun.route_exclude.title')}
+                desc={t('settings.tun.route_exclude.desc')}
+                icon={<Globe size={18} />}
+              >
+                <Box sx={{ width: 320, flexShrink: 0 }}>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="192.168.0.0/16,10.0.0.0/8"
+                    value={routeExclude}
+                    onChange={(e) => setRouteExclude(e.target.value)}
+                    onBlur={() => saveTUNField({ route_exclude_address: routeExclude.split(',').map((v) => v.trim()).filter(Boolean) })}
+                  />
+                </Box>
+              </SettingRowInline>
+            </Box>
+          </Box>
+
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mt: 1.5 }}>
+            <SectionHeader icon={<Cpu size={18} />} label={t('settings.tabs.startup')} />
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <SettingRowInline title={t('settings.auto_start.title')} desc={t('settings.auto_start.desc')} icon={<Cpu size={18} />}>
+                <FormControlLabel
+                  control={<Switch checked={autoStart} onChange={(e) => handleToggleAutoStart(e.target.checked)} />}
+                  label={t('settings.auto_start.title')}
+                  sx={{ gap: 1, marginLeft: 0, marginRight: 0 }}
+                />
+              </SettingRowInline>
+              <SettingRowInline title={t('settings.auto_start_method.title')} desc={autoStartMethodDesc} icon={<Bolt size={18} />}>
+                <Box sx={{ width: 240, flexShrink: 0 }}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel id="auto-start-method-label">{t('settings.auto_start_method.title')}</InputLabel>
+                    <Select
+                      labelId="auto-start-method-label"
+                      id="auto-start-method-select"
+                      value={AUTO_START_METHODS.some((m) => m.value === autoStartMethod) ? autoStartMethod : 'task'}
+                      label={t('settings.auto_start_method.title')}
+                      onChange={(e) => handleSetAutoStartMethod(e.target.value)}
+                    >
+                      {AUTO_START_METHODS.map((m) => (
+                        <MenuItem key={m.value} value={m.value}>
+                          {t(`settings.auto_start_method.${m.value}`)}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+              </SettingRowInline>
+              <SettingRowInline title={t('settings.auto_proxy.title')} desc={t('settings.auto_proxy.desc')} icon={<Activity size={18} />}>
+                <FormControlLabel
+                  control={<Switch checked={autoEnableProxyOnAutoStart} onChange={(e) => handleToggleAutoEnableProxyOnAutoStart(e.target.checked)} />}
+                  label={t('settings.auto_proxy.title')}
+                  sx={{ gap: 1, marginLeft: 0, marginRight: 0 }}
+                />
+              </SettingRowInline>
+              <SettingRowInline title={t('settings.auto_sysproxy.title')} desc={t('settings.auto_sysproxy.desc')} icon={<Anchor size={18} />}>
+                <FormControlLabel
+                  control={<Switch checked={autoEnableSysProxyOnAutoStart} onChange={(e) => handleToggleAutoEnableSysProxyOnAutoStart(e.target.checked)} />}
+                  label={t('settings.auto_sysproxy.title')}
+                  sx={{ gap: 1, marginLeft: 0, marginRight: 0 }}
+                />
+              </SettingRowInline>
+              <SettingRowInline title={t('settings.show_main.title')} desc={t('settings.show_main.desc')} icon={<Monitor size={18} />}>
+                <FormControlLabel
+                  control={<Switch checked={showMainOnAutoStart} onChange={(e) => handleToggleShowMainWindowOnAutoStart(e.target.checked)} />}
+                  label={t('settings.show_main.title')}
+                  sx={{ gap: 1, marginLeft: 0, marginRight: 0 }}
+                />
+              </SettingRowInline>
+            </Box>
+          </Box>
+        </Grid>
+
+        <Grid size={{ xs: 12, lg: 6 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <SectionHeader icon={<ShieldAlert size={18} />} label={t('settings.tabs.security')} />
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              <SettingRowInline title={t('settings.ca_management.reset')} desc={t('settings.ca_management.reset_hint')} icon={<RefreshCcw size={18} />}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={isCertBusy ? <CircularProgress size={20} /> : null}
+                  onClick={handleRegenerateCert}
+                >
+                  {isCertBusy ? t('ech_form.probing') : t('common.apply')}
+                </Button>
+              </SettingRowInline>
+              <SettingRowInline title={t('settings.ca_management.export')} desc={caStatus?.CertPath || undefined} icon={<FolderOpen size={18} />}>
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={<FolderOpen size={16} />}
+                  onClick={() => OpenCertDir()}
+                >
+                  {t('common.view')}
+                </Button>
+              </SettingRowInline>
+            </Box>
+
+            <StackedRow data-tut="cert-section" title={t('settings.ca_management.title')} desc={caStatus?.Installed ? t('dashboard.cert_installed') : t('dashboard.cert_not_installed')} icon={<ShieldAlert size={18} />}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                <Typography variant="body2" sx={{ fontWeight: 'bold', color: caStatus?.Installed ? 'success.main' : 'text.secondary' }}>
+                  {caStatus?.Installed ? t('settings.certs_count', { count: installedCerts.length }) : t('common.off')}
+                </Typography>
+                {installedCerts.length === 0 ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 2, color: 'text.secondary', opacity: 0.5 }}>
+                    <ShieldAlert size={32} />
+                    <Typography variant="caption" sx={{ mt: 0.5 }}>{t('proxies.no_ech')}</Typography>
+                  </Box>
+                ) : (
+                  <Box sx={{ mt: 1, maxHeight: 320, overflowY: 'auto' }}>
+                    {installedCerts.map((cert: any) => (
+                      <Box key={cert.token} sx={{ p: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, bgcolor: 'background.default', mb: 0.5 }}>
+                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                          <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', wordBreak: 'break-all' }}>
+                            {cert.subject}
+                          </Typography>
+                          <Typography variant="caption" sx={{ fontSize: '0.75rem', color: 'text.secondary', display: 'block', wordBreak: 'break-all' }}>
+                            {cert.storeLocation} / {cert.storeName} / {cert.thumbprint}
+                          </Typography>
+                        </Box>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          color="error"
+                          disabled={isCertBusy}
+                          onClick={() => handleUninstallCert(cert.token)}
+                        >
+                          <Delete size={16} />
+                          {t('common.delete')}
+                        </Button>
+                      </Box>
+                    ))}
+                  </Box>
+                )}
+              </Box>
+            </StackedRow>
+          </Box>
+        </Grid>
+
+        <Grid size={12}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <SectionHeader icon={<Wifi size={18} />} label={t('network.ipv6_title')}
+              action={<Button size="small" variant="text" disabled={isIpv6Checking} onClick={handleRefreshIPv6}>
+                {isIpv6Checking ? t('network.ipv6_checking') : t('network.ipv6_refresh')}
+              </Button>}
+            />
+
+            {ipv6Available ? (
+              <Box sx={{ p: 2, bgcolor: mode === 'light' ? 'rgba(34,197,94,0.1)' : 'rgba(34,197,94,0.15)', border: 1, borderColor: mode === 'light' ? 'rgba(34,197,94,0.3)' : 'rgba(34,197,94,0.4)', borderRadius: 2, display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+                <Box sx={{ width: 40, height: 40, borderRadius: 1, bgcolor: 'success.main', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Wifi size={16} />
+                </Box>
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'success.main' }}>
+                    {t('network.ipv6_ok')}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.5, display: 'block' }}>
+                    {t('network.ipv6_ok_desc')}
+                  </Typography>
+                </Box>
+              </Box>
+            ) : (
+              <Box sx={{ p: 2, bgcolor: mode === 'light' ? 'rgba(239,68,68,0.1)' : 'rgba(239,68,68,0.15)', border: 1, borderColor: mode === 'light' ? 'rgba(239,68,68,0.3)' : 'rgba(239,68,68,0.4)', borderRadius: 2, display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+                <Box sx={{ width: 40, height: 40, borderRadius: 1, bgcolor: 'error.main', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <AlertCircle size={16} />
+                </Box>
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 'bold', color: 'error.main' }}>
+                    {t('network.ipv6_disabled_title')}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.5, display: 'block' }}>
+                    {t('network.ipv6_disabled_desc')}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+          </Box>
+        </Grid>
+
+        <Grid size={12}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <SectionHeader icon={<Bolt size={18} />} label={t('rules.form.cf_pool')}
+              action={<Button size="small" variant="text" disabled={isCheckingHealth} onClick={handleHealthCheck}>
+                {isCheckingHealth ? t('ech_form.probing') : t('dns.test')}
+              </Button>}
+            />
+
+            <Box sx={{ bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, overflow: 'hidden' }}>
+              <Grid container columns={12} spacing={1}>
+                <Grid size={{ xs: 12, md: 2 }}>
+                  <Box sx={{ p: 2, borderRight: { md: 1 }, borderColor: 'divider', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                    <Button
+                      color="primary"
+                      size="small"
+                      startIcon={isRefreshing ? <CircularProgress size={20} /> : <Download size={16} />}
+                      onClick={handleFetchIPs}
+                    >
+                      {isRefreshing ? undefined : t('settings.cf_pool.fetch_now')}
+                    </Button>
+                  </Box>
+                </Grid>
+                <Grid size={{ xs: 12, md: 10 }}>
+                  <Box sx={{ p: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, px: 1 }}>
+                      <Typography variant="caption" sx={{ fontWeight: 'bold', textTransform: 'uppercase', color: 'text.secondary', letterSpacing: '0.05em' }}>
+                        {t('settings.ip_pool', { count: ipStats.length })}
+                      </Typography>
+                      <Bolt size={16} color="warning.main" />
+                    </Box>
+                    <Grid container columns={{ xs: 1, sm: 2 }} spacing={1} sx={{ maxHeight: 400, overflowY: 'auto', px: 1, pb: 2 }}>
+                      {ipStats.length === 0 ? (
+                        <Grid size={12}>
+                          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 2, color: 'text.secondary', opacity: 0.5 }}>
+                            <AlertCircle size={32} />
+                            <Typography variant="caption" sx={{ mt: 0.5 }}>{t('rules.form.no_domains')}</Typography>
+                          </Box>
+                        </Grid>
+                      ) : (
+                        ipStats.map((ip: any, i: number) => {
+                          const latency = parseLatencyMs(ip.latency);
+                          const ok = latency > 0;
+                          return (
+                            <Grid key={i} size={{ xs: 12, sm: 6 }}>
+                              <Box sx={{ p: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, bgcolor: 'background.default', '&:hover': { borderColor: 'primary.main' }, transition: 'all 0.15s' }}>
+                                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', minWidth: 0 }}>
+                                  <Box sx={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, bgcolor: ok ? 'success.main' : 'error.main', boxShadow: ok ? '0 0 8px rgba(34,197,94,0.5)' : undefined }} />
+                                  <Typography variant="caption" sx={{ fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {ip.ip}
+                                  </Typography>
+                                </Box>
+                                <Typography variant="caption" sx={{ fontWeight: 'bold', color: ok && latency < 200 ? 'success.main' : 'warning.main' }}>
+                                  {ip.latency ? `${Math.round(latency)}ms` : '---'}
+                                </Typography>
+                              </Box>
+                            </Grid>
+                          );
+                        })
+                      )}
+                    </Grid>
+                  </Box>
+                </Grid>
+              </Grid>
+            </Box>
+          </Box>
+        </Grid>
+
+        <Grid size={12}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <SectionHeader icon={<Globe size={18} />} label={t('settings.ip_pools.title')}
+              action={<Typography variant="caption" sx={{ color: 'text.secondary', px: 1 }}>{t('settings.ip_pools.subtitle')}</Typography>}
+            />
+
+            <Box sx={{ p: 2, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+              {ipPools.length === 0 && (
+                <Typography variant="caption" sx={{ color: 'text.secondary', px: 1, py: 0.5 }}>
+                  {t('settings.ip_pools.empty')}
+                </Typography>
+              )}
+              {ipPools.map((pool: any) => (
+                <Box key={pool.name} sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, bgcolor: 'background.default', display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                  <Globe size={14} />
+                  <Box sx={{ minWidth: 0, flexGrow: 1 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 'bold', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {pool.name}
+                    </Typography>
+                    <Typography variant="caption" sx={{ fontSize: 10, color: 'text.secondary' }}>
+                      {t('settings.ip_pools.ip_count', { count: (pool.preferred_ips || []).length })}
+                    </Typography>
+                  </Box>
+                  <Button size="small" variant="text" color="error" onClick={() => handleRemovePool(pool.name)}>
+                    {t('common.delete')}
+                  </Button>
+                </Box>
+              ))}
+
+              <Divider />
+              <Grid container columns={12} spacing={1}>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <TextField size="small" fullWidth label={t('settings.ip_pools.name_label')} placeholder="cloudfront"
+                    value={newPoolName} onChange={(e) => setNewPoolName(e.target.value)} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <TextField size="small" fullWidth multiline minRows={1} maxRows={3}
+                    label={t('settings.ip_pools.ips_label')} placeholder="13.226.69.219, 13.226.69.220"
+                    value={newPoolIPs} onChange={(e) => setNewPoolIPs(e.target.value)} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 2 }} sx={{ display: 'flex', alignItems: 'center' }}>
+                  <Button size="small" variant="outlined" fullWidth disabled={!newPoolName.trim() || !newPoolIPs.trim()} onClick={handleAddPool}>
+                    {t('settings.ip_pools.add')}
+                  </Button>
+                </Grid>
+              </Grid>
+            </Box>
+          </Box>
+        </Grid>
+
+        <Grid size={12}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <SectionHeader icon={<FileText size={18} />} label={t('settings.tabs.logs')}
+              action={<Button size="small" variant="outlined" disabled={isCleaningLogs} onClick={handleCleanLogs}>
+                <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                  <Delete size={16} />
+                  {t('settings.logs.clean')}
+                </Box>
+              </Button>}
+            />
+
+            <StackedRow title={t('settings.logs.title')} desc={t('settings.logs.desc')} icon={<FileText size={18} />}>
+              {logFiles.length === 0 ? (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 2, color: 'text.secondary', opacity: 0.5 }}>
+                  <FileText size={32} />
+                  <Typography variant="caption" sx={{ mt: 0.5 }}>{t('settings.logs.empty')}</Typography>
+                </Box>
+              ) : (
+                <Box sx={{ mt: 1, maxHeight: 360, overflowY: 'auto' }}>
+                  {logFiles.map((f: any, i: number) => (
+                    <Box key={f.name} sx={{ p: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, bgcolor: 'background.default', mb: 0.5 }}>
+                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', fontSize: '0.75rem', fontWeight: 'bold', wordBreak: 'break-all', minWidth: 0, flex: 1 }}>
+                        {fmtLogDate(f.name)}
+                        {i === 0 && (
+                          <Badge color="primary" sx={{ borderRadius: '50%' }}>
+                            {t('settings.logs.current')}
+                          </Badge>
+                        )}
+                      </Box>
+                      <Typography variant="caption" sx={{ fontSize: '0.75rem', color: 'text.secondary', flexShrink: 0 }}>
+                        {fmtLogSize(f.size || 0)}
+                      </Typography>
+                      <Button size="small" variant="text" onClick={() => handleViewLog(f.name)} sx={{ flexShrink: 0 }}>
+                        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                          <FolderOpen size={16} />
+                          {t('settings.logs.view')}
+                        </Box>
+                      </Button>
+                    </Box>
+                  ))}
+                </Box>
+              )}
+            </StackedRow>
+          </Box>
+        </Grid>
+
+      </Grid>
+      </Box>
+    </Box>
   );
 };
 

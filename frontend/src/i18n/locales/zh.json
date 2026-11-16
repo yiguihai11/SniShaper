@@ -1,13 +1,44 @@
 {
+  "profiles": {
+    "title": "配置文件",
+    "desc": "为不同网络或使用场景保存命名的配置快照（规则与设置相互隔离）。切换会先停止代理并断开活动连接。",
+    "active": "当前",
+    "none_active": "未使用配置文件",
+    "create": "从当前配置创建",
+    "create_title": "创建配置文件",
+    "rename": "重命名",
+    "rename_title": "重命名配置文件",
+    "duplicate": "复制",
+    "duplicate_title": "复制配置文件",
+    "switch": "切换",
+    "switch_confirm_title": "切换配置文件",
+    "switch_confirm_desc": "切换到「{name}」将停止代理并断开所有活动连接，然后用该配置文件的内容替换当前配置（未保存的改动会随切换保存回原配置文件）。切换后需手动重新启动代理。是否继续？",
+    "export": "导出",
+    "import": "导入",
+    "name_label": "配置文件名称",
+    "updated": "更新于",
+    "created": "配置文件已创建",
+    "renamed": "配置文件已重命名",
+    "duplicated": "配置文件已复制",
+    "switched": "已切换配置文件，代理已停止",
+    "exported": "配置文件已导出",
+    "imported": "配置文件已导入",
+    "imported_with_warnings": "配置文件已导入，但有警告",
+    "import_invalid": "导入失败：配置文件无效",
+    "action_failed": "操作失败",
+    "empty": "暂无配置文件，可从当前配置创建一个"
+  },
   "common": {
     "loading": "正在加载...",
     "save": "保存",
     "cancel": "取消",
+    "close": "关闭",
     "confirm": "确定",
     "on": "开",
     "off": "关",
     "success": "成功",
     "failed": "失败",
+    "saving": "保存中...",
     "status": "状态",
     "view": "查看",
     "edit": "编辑",
@@ -19,7 +50,10 @@
     "ready": "就绪",
     "running": "运行中",
     "stopped": "已停止",
-    "error": "错误"
+    "error": "错误",
+    "no_matches": "无匹配选项",
+    "clear": "清除",
+    "expand_options": "展开选项"
   },
   "sidebar": {
     "dashboard": "仪表盘",
@@ -28,8 +62,15 @@
     "routing": "自动分流",
     "dns": "DNS 设置",
     "logs": "实时日志",
+    "connections": "实时连接",
+    "profiles": "配置文件",
     "settings": "系统设置",
-    "about": "关于"
+    "about": "关于",
+    "light_mode": "浅色模式",
+    "dark_mode": "深色模式",
+    "nav_label": "主导航",
+    "dark_mode_aria": "切换到深色模式",
+    "light_mode_aria": "切换到浅色模式"
   },
   "welcome": {
     "title": "欢迎使用 SniShaper",
@@ -37,12 +78,56 @@
     "select_language": "选择语言",
     "start": "开始使用"
   },
+  "tutorial": {
+    "skip": "跳过",
+    "back": "上一步",
+    "next": "下一步",
+    "done": "完成",
+    "open_wiki": "打开 Wiki",
+    "s1": { "title": "启动代理", "text": "点击高亮的「开启代理」按钮启动本地代理，流量即可经过 SniShaper 处理。" },
+    "s2": { "title": "系统代理", "text": "再点击「系统代理」按钮打开系统代理，浏览器流量就会自动走代理。" },
+    "s3": { "title": "使用规则", "text": "「规则」页内置官方规则，按站点分组应用 MITM、TLS 分片、QUIC 等模式，也可以新建自己的分组；未命中规则的域名由 GFWList 自动分流。" },
+    "s4": { "title": "安装证书", "text": "MITM、QUIC 等模式需要根证书。未安装时主页会自动弹出安装提示；这里可以查看和管理已安装的证书。" },
+    "s5": { "title": "TUN 模式", "text": "想让所有应用无需配置直接走代理时，在「设置 → TUN」开启 TUN 模式（需管理员权限）。" },
+    "s6": { "title": "学习更多", "text": "恭喜完成基础引导！高级功能（CLI、DNS、Cloudflare IP 优选、进化模式等）请查看 GitHub Wiki，遇到问题可先阅读 FAQ。" }
+  },
+  "notices": {
+    "title": "公告中心",
+    "subtitle": "共 {count} 条公告，按发布时间倒序排列",
+    "pinned": "置顶",
+    "expired": "已过期",
+    "empty": "暂无公告",
+    "refresh": "刷新",
+    "close": "关闭",
+    "view_all": "查看全部",
+    "mark_read": "标记为已读",
+    "more_unread": "另有 {count} 条未读",
+    "history_entry": "历史公告 · {count} 条",
+    "stale": "公告服务暂时不可达，当前显示本地缓存内容",
+    "link_default": "查看详情"
+  },
   "dashboard": {
     "title": "主页",
+    "migration_report": {
+      "title": "配置迁移报告",
+      "changes": "已应用的修改",
+      "warnings": "警告",
+      "errors": "错误",
+      "backups": "原配置备份"
+    },
     "proxy_start": "开启代理",
     "proxy_stop": "停止代理",
     "sys_proxy": "系统代理",
     "tun_status": "TUN",
+    "outbound_interface": "出站网卡",
+    "outbound_interface_smart": "智能选择（推荐）",
+    "outbound_interface_hint": "TUN 出站流量绑定的物理网卡。智能模式会排除虚拟网卡，并按默认路由度量值挑选物理网卡。",
+    "outbound_interface_virtual": "虚拟",
+    "outbound_interface_own": "代理自身",
+    "outbound_interface_default": "默认路由",
+    "outbound_interface_auto_pick": "智能选中",
+    "outbound_interface_applied": "出站网卡已更新",
+    "outbound_interface_failed": "切换出站网卡失败",
     "core_status": "核心状态",
     "run_status": "运行状态",
     "work_mode": "工作模式",
@@ -67,19 +152,28 @@
     "notifications": {
       "tun_not_running": "TUN 未进入运行态",
       "tun_updated": "TUN 状态已更新",
-      "tun_failed": "TUN 切换失败"
+      "tun_failed": "TUN 切换失败",
+      "proxy_toggle_failed": "代理操作失败",
+      "kill_process_failed": "结束进程或重启失败",
+      "sys_proxy_failed": "系统代理操作失败",
+      "tun_starting": "TUN 启动中，请稍候...",
+      "tun_timeout": "TUN 启动超时，请查看日志。",
+      "tun_stopped": "已关闭 TUN 路径。"
+    },
+    "port_occupied": {
+      "title_unavailable": "端口不可用",
+      "title_occupied": "端口被占用",
+      "ok": "知道了",
+      "kill_and_retry": "结束进程并重试",
+      "excluded_range": "端口 {port} 位于 Windows 系统排除端口范围（{name}）",
+      "excluded_desc": "该端口被系统保留（通常由 Hyper-V / WSL / Docker 等占用），没有可结束的进程。请在设置中更换监听端口，或关闭相关服务后重新启动代理。",
+      "occupied_by": "端口 {port} 正被 {name}（PID {pid}）占用",
+      "occupied_desc": "代理无法监听该端口。结束该进程后会自动重试启动代理。请确认这不是重要程序。",
+      "unknown_process": "未知程序"
     }
   },
   "proxies": {
     "title": "代理",
-    "server_node": "Server 节点",
-    "testing": "测试中...",
-    "test_conn": "测试连接",
-    "test_hint": "测试内置链路连通性 (绕过分流规则)",
-    "node_host": "节点 Host 名",
-    "auth_secret": "鉴权令牌 (AUTH_SECRET)",
-    "auth_placeholder": "输入服务端设置的密码",
-    "save_node": "保存节点配置",
     "ech_management": "ECH 配置管理",
     "add_ech": "添加配置",
     "no_ech": "暂无 ECH 配置",
@@ -89,7 +183,31 @@
     "edit_ech": "编辑 ECH 配置",
     "probe_ech": "探测并创建 ECH 配置",
     "modifying": "正在修改",
-    "probe_hint": "通过域名进行 DoH 探测获取 ECH 资源"
+    "probe_hint": "通过域名进行 DoH 探测获取 ECH 资源",
+    "nat64_management": "NAT64 配置管理",
+    "add_nat64": "添加 NAT64 配置",
+    "edit_nat64": "编辑 NAT64 配置",
+    "no_nat64": "暂无 NAT64 配置",
+    "delete_nat64_confirm": "确定要删除此 NAT64 配置吗？",
+    "nat64_form_subtitle": "配置独立规则前缀以便绕过特定黑名单封锁",
+    "nat64_form_name": "配置名称",
+    "nat64_form_prefix": "NAT64 前缀",
+    "migration_service": "连接迁移服务",
+    "migration_service_title": "迁移 API 地址",
+    "migration_service_desc": "配置连接迁移服务地址",
+    "migration_service_hint": "输入迁移服务 API 地址",
+    "test_connect": "测试连接",
+    "testing": "测试中...",
+    "delete_aria": "删除 {name}",
+    "nat64_placeholder_name": "例如：特定黑名单绕过",
+    "nat64_placeholder_prefix": "例如：64:ff9b::",
+    "notifications": {
+      "connect_success": "{name}: 连接成功，延迟 {ms} ms",
+      "connect_failed": "{name}: 连接失败: {error}",
+      "migration_required": "请输入迁移服务地址",
+      "test_success": "测试成功",
+      "saved": "已保存"
+    }
   },
   "ech_form": {
     "title": "ECH 借力探测",
@@ -147,7 +265,9 @@
       "updated": "DNS 节点已更新",
       "added": "DNS 节点已添加",
       "deleted": "DNS 节点已删除"
-    }
+    },
+    "move_up": "上移",
+    "move_down": "下移"
   },
   "rules": {
     "title": "网站规则",
@@ -161,6 +281,23 @@
     "delete_warning": "，删除后不会自动恢复。",
     "copy_success": "配置已复制",
     "copy_hint": "现在可以直接粘贴分享。",
+    "explain_button": "测试域名",
+    "explain_title": "规则匹配测试",
+    "explain_subtitle": "模拟一个域名会被如何处理；结果是预测，不是真实连接的决策记录。",
+    "explain_host_label": "域名",
+    "explain_process_label": "进程（可选）",
+    "explain_run": "测试",
+    "explain_running": "测试中…",
+    "explain_simulated_badge": "模拟结果",
+    "explain_host": "域名",
+    "explain_mode": "模式",
+    "explain_source": "来源",
+    "explain_rule": "匹配规则",
+    "explain_upstream": "上游",
+    "explain_dns": "DNS 模式",
+    "explain_sni_fake": "Fake SNI",
+    "explain_downgraded": "全局透明模式已将该 MITM 规则降级为直连，以避免证书错误。",
+    "explain_candidates": "候选规则（按优先级）",
     "form": {
       "name": "描述名称",
       "name_placeholder": "例如: Google 服务",
@@ -171,6 +308,9 @@
       "no_domains": "尚未添加任何匹配域名",
       "advanced_show": "展开高级设置",
       "advanced_hide": "折叠高级设置",
+      "process": "按应用程序分流 (Process)",
+      "process_placeholder": "例如: telegram.exe, discord.exe（留空对所有应用生效）",
+      "process_hint": "仅对列表内进程的连接生效（逗号分隔，不区分大小写）。进程规则优先级高于域名规则；无法识别进程时该规则不生效。域名留空表示该进程的所有目标。",
       "upstream": "上游服务器 (Upstream)",
       "upstream_placeholder": "留空直连，或填写 1.2.3.4:443",
       "dns_policy": "DNS 解析策略",
@@ -181,14 +321,30 @@
       "ech_enable": "ECH 加密",
       "ech_hint": "启用后尝试使用 ECH 连接",
       "cf_pool": "优选 IP 池",
-      "cf_pool_hint": "优先使用 Cloudflare 优选 IP"
+      "cf_pool_hint": "优先使用 Cloudflare 优选 IP",
+      "ip_pool_select": "选择命名优选池",
+      "ip_pool_count": "{count} 个 IP",
+      "nat64_enable": "启用 NAT64 映射",
+      "nat64_hint": "开启此功能以执行 NAT64 映射转换",
+      "nat64_profile": "NAT64 配置",
+      "add_domain": "添加域名",
+      "remove_domain": "移除域名",
+      "cert_verify_warn": "仅在你明确知道目标证书来源时启用",
+      "allow_spki_list": "允许 SPKI SHA256 列表",
+      "prefix_label": "前缀：{prefix}",
+      "website_placeholder": "例如：google.com",
+      "placeholder_domains": "每行一个域名，例如\n*.github.com\ngithub.com",
+      "placeholder_suffixes": "每行一个后缀，例如\n.github.com\n.cloudfront.net",
+      "placeholder_spki": "每行一个 Base64 指纹",
+      "placeholder_mapped": "例如: github-com.mapped",
+      "manual_ech": "手动配置 ECH"
     },
     "modes": {
       "mitm": "修改 SNI 或注入 ECH 配置",
-      "server": "连接上游反代",
       "tls-rf": "TLS 分片",
       "quic": "QUIC 分片混淆",
-      "transparent": "不解密 TLS，仅透传"
+      "transparent": "不解密 TLS，仅透传",
+      "migration": "TLS 1.2 会话恢复"
     },
     "cert_policy": {
       "ignore": "忽略证书验证",
@@ -201,26 +357,114 @@
       "ipv4_only": "仅 IPv4",
       "ipv6_only": "仅 IPv6"
     },
+    "fragment": {
+      "title": "分片参数",
+      "reset": "恢复默认",
+      "tcp_only": "仅 TCP 分片",
+      "records": "TLS 记录段数（1-8）",
+      "segments": "TCP 分段数（1-16）",
+      "interval": "发送间隔（毫秒）",
+      "minorver": "修改 minor version",
+      "oob": "带外发送（OOB）"
+    },
     "display": {
       "transparent": "透传",
       "direct": "直连",
-      "fragment": "分片"
+      "fragment": "分片",
+      "migration": "迁移",
+      "others": "其他",
+      "default_group": "默认",
+      "cf_ip_pool": "CF IP POOL",
+      "ip_pool_name": "IP POOL: {name}",
+      "doh_dynamic": "DOH DYNAMIC"
     },
     "notifications": {
-      "deleted": "规则已删除"
-    }
+      "deleted": "规则已删除",
+      "save_success": "规则已保存",
+      "save_error": "保存规则失败",
+      "save_error_hint": "请检查输入内容后重试",
+      "delete_error": "删除规则失败",
+      "reverted": "已恢复上游默认",
+      "revert_error": "恢复默认失败"
+    },
+    "edit_rule_aria": "编辑规则",
+    "delete_rule_aria": "删除规则",
+    "override_badge": "已修改",
+    "custom_badge": "自定义",
+    "revert_rule": "恢复默认",
+    "revert_hint": "这将丢弃对该规则的本地修改，恢复为上游默认配置。",
+    "revert_prefix": "恢复 ",
+    "revert_warning": " 的上游默认配置？",
+    "revert_aria": "恢复该规则为上游默认",
+    "filter_mode_aria": "筛选模式",
+    "filter_source_aria": "筛选来源",
+    "source_all": "全部",
+    "source_default": "默认",
+    "source_override": "已修改",
+    "source_user": "自定义",
+    "export_aria": "导出配置",
+    "update_rules": "更新规则",
+    "update_running": "更新中…",
+    "update_latest": "规则已是最新",
+    "update_latest_detail": "远端更新于 {date} · {hash}",
+    "update_applied_detail": "本地 {local} → 远程 {remote} · 远端更新于 {date}",
+    "update_applied": "规则已更新：新增 {added} 条，修改 {changed} 条，移除 {removed} 条",
+    "update_failed": "规则更新失败"
+  },
+  "connections": {
+    "title": "实时连接",
+    "count": "{n} 条连接",
+    "search_placeholder": "搜索主机 / 规则 / 模式",
+    "empty": "暂无活动连接",
+    "no_match": "没有匹配的连接",
+    "col_host": "主机",
+    "col_dst": "目标地址",
+    "col_rule": "规则",
+    "col_mode": "模式",
+    "col_up": "上传",
+    "col_down": "下载",
+    "col_age": "时长",
+    "col_state": "状态",
+    "state_active": "活动",
+    "copy_detail": "复制连接详情",
+    "age_seconds": "{s} 秒",
+    "age_minutes": "{m} 分钟",
+    "age_hours": "{h} 小时"
   },
   "logs": {
     "title": "系统日志",
+    "level_error": "ERR",
+    "level_warn": "WRN",
+    "level_info": "INF",
     "capture": "捕捉日志",
     "stop_capture": "停止捕捉",
     "resume": "继续刷新",
     "pause": "暂停刷新",
     "scroll_top": "回到顶部",
     "clear": "清空日志",
+    "export": "导出",
     "search_placeholder": "搜索关键词、域、错误代码...",
     "capture_hint": "日志采集默认关闭。点击右上角“捕捉日志”后，页面会开始临时收集并自动滚动到最新日志。",
-    "no_logs": "暂无日志采集"
+    "no_logs": "暂无日志采集",
+    "latest": "最新",
+    "capture_disabled": "CAPTURE DISABLED",
+    "capture_on": "CAPTURE ON",
+    "capture_off": "CAPTURE OFF",
+    "buffer": "BUFFER: {count} LINES",
+    "refresh_paused": "REFRESH PAUSED",
+    "diag_button": "诊断包",
+    "diag_title": "导出诊断包",
+    "diag_hint": "导出前请检查包含的文件与已脱敏的字段；诊断包用于 bug 报告。",
+    "diag_files_title": "包含文件",
+    "diag_redacted_title": "已脱敏字段",
+    "diag_redacted_api_key": "API 密钥（api_key）",
+    "diag_redacted_url_credentials": "URL 内嵌凭据（user:pass@）",
+    "diag_redacted_query_token": "查询参数中的令牌（token=…）",
+    "diag_redacted_bearer": "Bearer 令牌",
+    "diag_export": "导出",
+    "diag_exporting": "导出中…",
+    "diag_success": "诊断包已导出",
+    "diag_failed": "诊断包导出失败"
   },
   "routing": {
     "title": "自动分流",
@@ -230,13 +474,11 @@
     "mode_switch": "分流模式切换",
     "modes": {
       "off": "关闭",
-      "smart": "智能",
-      "server": "Server"
+      "smart": "智能"
     },
     "gfwlist_check": "GFWList 状态检测",
     "preloaded": "已预加载 {count} 条路由规则",
     "inactive": "规则源未激活",
-    "update_list": "更新规则列表",
     "save_apply": "应用并保存设置",
     "features": "功能说明",
     "feature_smart": "智能模式",
@@ -245,20 +487,43 @@
     "feature_priority_desc": "手动定义的【规则】页面条目拥有最高优先级。若均未命中且分流开启，则走此处的自动逻辑。",
     "notifications": {
       "saved": "分流设置已保存",
-      "saved_desc": "新的自动分流策略已经应用。",
-      "updated": "规则源已更新",
-      "updated_desc": "当前已加载 {count} 条自动分流规则。"
+      "saved_desc": "新的自动分流策略已经应用。"
     }
+  },
+  "network": {
+    "ipv6_title": "IPv6 检测",
+    "ipv6_refresh": "重新检测",
+    "ipv6_checking": "检测中...",
+    "ipv6_ok": "已检测到 IPv6",
+    "ipv6_ok_desc": "当前网络存在全局 IPv6 地址，IPv6 相关功能（NAT64 映射、IPv6 DNS 策略、演进测试 IPv6 选项）可用。",
+    "ipv6_disabled_title": "当前网络为纯 IPv4",
+    "ipv6_disabled_desc": "未检测到可用的全局 IPv6 地址。NAT64 与 IPv6 DNS 策略仍可配置，但在纯 IPv4 网络下会直接连接失败（不会静默回退到 IPv4）。检测到 IPv6 后可正常生效。每 10 分钟自动检测一次，也可点击右侧按钮立即刷新。",
+    "ipv6_disabled": "纯 IPv4 网络：IPv6 相关规则（NAT64、IPv6 DNS）无法生效",
+    "ipv6_only_will_fail": "当前为纯 IPv4 网络，仅 IPv6 会连接失败",
+    "ipv6_nat64_will_fail": "当前为纯 IPv4 网络，NAT64 需要 IPv6 才能生效",
+    "ipv6_warn_suffix": "当前为纯 IPv4 环境，无法测试 IPv6 连通性",
+    "ipv6_restored": "已检测到 IPv6：NAT64、IPv6 规则等功能已恢复",
+    "recovery_recovered": "检测到上次异常退出遗留的系统代理，已自动恢复网络设置",
+    "recovery_left": "检测到上次遗留的系统代理记录，但当前系统代理已被其他程序修改，未做任何更改",
+    "recovery_failed": "检测到上次遗留的系统代理，但恢复失败（可能需要管理员权限）"
   },
   "settings": {
     "title": "系统设置",
+    "tutorial": {
+      "title": "新手引导",
+      "desc": "重新查看基础功能使用引导",
+      "replay": "重新学习"
+    },
     "tabs": {
-      "general": "常规",
+      "general": "通用",
+      "port": "端口",
       "proxy": "代理设置",
       "network": "网络",
       "security": "证书 & 安全",
       "appearance": "语言与主题",
-      "startup": "启动与后台"
+      "startup": "启动与后台",
+      "logs": "日志管理",
+      "tun": "TUN 虚拟网卡"
     },
     "language": {
       "title": "界面语言",
@@ -275,25 +540,39 @@
       "title": "开机自动启动",
       "desc": "Windows 登录后自动在后台运行。"
     },
+    "auto_start_method": {
+      "title": "自启方式",
+      "desc": "开机自启的注册机制。",
+      "task": "任务计划程序",
+      "task_desc": "计划任务开机启动，以最高权限运行，无需 UAC 弹窗。",
+      "service": "Windows 服务",
+      "service_desc": "系统服务在登录时以最高权限拉起程序，无需 UAC 弹窗。",
+      "registry": "注册表",
+      "registry_desc": "注册表 Run 项开机启动，登录时会弹出一次 UAC 授权。"
+    },
     "auto_proxy": {
       "title": "启动时自动开启代理",
       "desc": "应用程序启动后立即进入代理工作态。"
+    },
+    "auto_sysproxy": {
+      "title": "自动开启代理时设置系统代理",
+      "desc": "自动开启代理生效后同步打开系统代理；关闭则仅启动本地代理服务，不修改系统代理设置。"
+    },
+    "auto_update_rules": {
+      "title": "自动更新规则",
+      "desc": "每次启动程序时从 GitHub 检查并合并最新规则；只新增和更新，你自己改过的规则不会被覆盖。"
     },
     "show_main": {
       "title": "启动时显示主界面",
       "desc": "关闭后开机启动将仅在托盘运行，不弹出窗口。"
     },
-    "socks5": {
-      "title": "启用 SOCKS5 支持",
-      "desc": "启用后，将启动独立的 SOCKS5 代理服务器。",
-      "port": "端口"
-    },
     "min_to_tray": {
       "title": "最小化到托盘",
       "desc": "点击关闭按钮时，程序将隐藏到系统托盘而不退出。"
     },
-    "http_port": "HTTP 代理端口",
-    "socks_port": "SOCKS5 代理端口",
+    "port_title": "代理端口",
+    "port_label": "端口",
+    "port_desc": "HTTP 与 SOCKS5 共用此端口。",
     "lan_sharing": {
       "title": "局域网共享",
       "desc": "允许局域网内的其他设备连接该代理。"
@@ -312,6 +591,99 @@
     },
     "cf_pool": {
       "fetch_now": "更新 IP 池"
+    },
+    "ip_pools": {
+      "title": "多 CDN 优选池",
+      "subtitle": "为不同 CDN 手动维护命名的优选 IP 池，规则编辑页可按名称选用",
+      "empty": "暂无自定义优选池，使用下方表单添加",
+      "name_label": "池名称",
+      "ips_label": "IP 列表（逗号/空格/换行分隔）",
+      "add": "添加",
+      "added": "优选池 {name} 已添加",
+      "removed": "优选池 {name} 已移除",
+      "ip_count": "{count} 个 IP",
+      "invalid_name": "名称无效或为保留名 cloudflare",
+      "no_ips": "请至少填写一个 IP 地址",
+      "duplicate_name": "已存在同名优选池"
+    },
+    "logs": {
+      "title": "日志文件",
+      "desc": "日志保存在安装目录的 log 文件夹，每次启动生成一个新的时间命名文件。",
+      "view": "查看",
+      "clean": "一键清理",
+      "current": "当前",
+      "empty": "暂无日志文件",
+      "no_content": "（暂无内容）",
+      "clean_done": "已清理 {count} 个旧日志文件"
+    },
+    "notifications": {
+      "updated": "设置已更新",
+      "port_invalid": "请输入 1-65535 范围内的有效端口"
+    },
+    "theme": {
+      "label": "配色方案",
+      "desc": "选择界面配色方案（均支持深色/浅色模式）。",
+      "default": "默认 MUI",
+      "sniShaper": "经典 SniShaper 蓝",
+      "forest": "森林绿",
+      "sunset": "暖阳橙",
+      "ocean": "海洋青",
+      "graphite": "石墨灰"
+    },
+    "select_language": "选择语言",
+    "select_theme": "选择主题",
+    "certs_count": "{count} CERTS",
+    "ip_pool": "IP POOL ({count})",
+    "update_channel": {
+      "title": "发布频道",
+      "desc": "选择接收更新的发布频道，检查更新时将按所选频道筛选最新版本。",
+      "alpha": "Alpha（预览版）：功能迭代最快，稳定性最低，适合尝鲜用户",
+      "beta": "Beta（测试版）：包含部分新功能，可能存在缺陷，适合测试反馈",
+      "rc": "Release Candidate（RC 候选版）：接近正式版，仅修复关键问题",
+      "stable": "Stable（稳定版）：仅推送正式发布版本，推荐大多数用户使用"
+    },
+    "download_source": {
+      "title": "下载源",
+      "desc": "选择更新包下载源：智能模式会自动为各加速站测速并选最快的；指定加速站时优先使用它，失败后自动回退直连与其他加速站。",
+      "direct": "直连",
+      "smart": "智能（自动测速选最快）",
+      "custom": "自定义",
+      "custom_placeholder": "https://your-mirror.example.com/",
+      "measure": "测速",
+      "measuring": "测速中...",
+      "unreachable": "不可达"
+    },
+    "tun": {
+      "outbound_iface": {
+        "title": "出站网卡",
+        "desc": "TUN 出站流量走哪块网卡。默认智能选择：按系统默认路由挑承载流量的物理网卡，避开 VMware / Hyper-V / 容器虚拟网卡。",
+        "auto": "智能选择（自动）",
+        "physical": "物理网卡",
+        "virtual": "虚拟网卡",
+        "default_route": "默认路由",
+        "in_use": "当前生效"
+      },
+      "outbound_exclude": {
+        "label": "排除网卡（可选）",
+        "placeholder": "VMware*,vEthernet*",
+        "hint": "支持选择或输入网卡名称。多个用逗号（,）分隔，支持 name* 通配符（如 VMware*）",
+        "error": "⚠️ 警告：输入包含系统未识别或不带通配符 (*) 的网卡名称，请检查拼写或添加 * 通配符。"
+      },
+      "stack": {
+        "title": "TUN 网络栈",
+        "desc": "gvisor 兼容性最好；mixed 走系统转发 TCP；system 为内核态，开销最低。",
+        "gvisor": "gvisor（用户态）",
+        "mixed": "mixed（混合）",
+        "system": "system（内核态）"
+      },
+      "adapter_name": {
+        "title": "虚拟网卡名称",
+        "desc": "TUN 虚拟网卡的名称，留空使用默认名 SniShaper。"
+      },
+      "route_exclude": {
+        "title": "排除网段",
+        "desc": "这些网段不经过隧道，直接走系统默认路由，逗号分隔的 CIDR。"
+      }
     }
   },
   "evolution": {
@@ -368,6 +740,8 @@
     "steps": {
       "direct": "直连",
       "tcping": "TCPing",
+      "tcp_ping": "TCPing",
+      "tcp_ping_nat64": "TCPing (NAT64)",
       "domain_fronting": "域前置",
       "tls_fragment": "TLS分片",
       "ech": "ECH",
@@ -396,6 +770,9 @@
     "development_plan": "开发计划",
     "development_plan_desc": "查看项目的开发路线图，了解即将推出的功能和改进计划。",
     "view_plan": "查看详情",
+    "qq_group": "QQ 交流群",
+    "qq_group_desc": "点击加入群聊，与 SniShaper 与 FlowWeaver 的用户和开发者直接交流。",
+    "join_group": "加入群聊",
     "check_update": "检查更新",
     "checking": "检查中...",
     "update_available": "发现新版本",
@@ -410,8 +787,55 @@
     "connection_refused": "连接被拒绝，可能是代理服务器不可用。",
     "dns_error": "DNS 解析失败，请检查您的 DNS 设置。",
     "proxy_error": "代理配置错误，请检查系统代理设置。",
-    "rights_reserved": "保留所有权利。",
+    "rights_reserved": "保留所有权利，AGPLv3 授权除外。",
     "made_with": "由 SniShaper 社区",
-    "by_community": "倾心打造"
+    "by_community": "倾心打造",
+    "latest_beta": "最新beta版",
+    "actions_build": "Actions 构建产物",
+    "no_release_found": "该频道暂无发布",
+    "no_release_found_desc": "当前发布频道下还没有可用版本，请尝试切换频道或稍后重试。",
+    "choose_download": "选择下载方式",
+    "choose_download_desc": "请选择要下载的安装资源",
+    "no_assets": "暂无可用资源",
+    "no_assets_desc": "该版本未提供 .exe / .zip 安装资源，请前往 GitHub 手动下载。",
+    "open_github": "打开 GitHub",
+    "asset_exe": "安装程序（.exe）",
+    "asset_zip": "便携版压缩包（.zip）",
+    "asset_7z": "便携版压缩包（.7z，旧版）",
+    "asset_size": "大小",
+    "download": "下载",
+    "downloading": "下载中",
+    "download_done": "下载完成",
+    "install": "安装",
+    "install_confirm": "确认下载并安装？",
+    "install_confirm_7z": "将自动解压并覆盖应用目录中的文件，应用会关闭并自动重启。是否继续？",
+    "install_started": "安装程序已启动，请按提示完成安装。",
+    "install_archive_started": "正在准备更新，应用即将关闭并自动重启。",
+    "install_failed": "安装失败",
+    "download_failed": "下载失败",
+    "rate_limited": "GitHub API 请求过于频繁（限流），请稍后重试。",
+    "api_error": "无法从 GitHub 获取版本信息，请稍后重试。",
+    "dir_not_writable": "应用目录不可写，无法覆盖更新。请改用 .exe 安装程序。",
+    "extract_failed": "解压更新包失败，请重新下载后重试。",
+    "bad_archive": "更新包内容无效，请重新下载后重试。",
+    "channel_alpha": "Alpha",
+    "channel_beta": "Beta",
+    "channel_rc": "RC",
+    "channel_stable": "Stable",
+    "restart_now": "立即重启",
+    "restart_later": "稍后重启",
+    "restart_to_update": "重启以更新",
+    "restart_prompt_desc": "新版安装包已下载完成，是否立即重启程序以完成更新？"
+  },
+  "window": {
+    "minimize": "最小化",
+    "maximize_restore": "最大化/还原",
+    "close": "关闭"
+  },
+  "modal": {
+    "close_dialog": "关闭对话框"
+  },
+  "toast": {
+    "close_notification": "关闭提示"
   }
 }

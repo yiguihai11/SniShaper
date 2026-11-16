@@ -1,12 +1,15 @@
 import React, { useCallback } from 'react';
+import { Box, IconButton, Tooltip } from '@mui/material';
 import { Minus, Square, X } from '../lib/icons';
-import { 
+import { useTranslation } from '../i18n/I18nContext';
+import {
   HandleWindowClose,
-  WindowMinimise, 
+  WindowMinimise,
   WindowToggleMaximise
 } from "../api/bindings";
 
 const WindowControls: React.FC = React.memo(() => {
+  const { t } = useTranslation();
   const handleMinimise = useCallback(async () => {
     try {
       await WindowMinimise();
@@ -32,32 +35,38 @@ const WindowControls: React.FC = React.memo(() => {
   }, []);
 
   return (
-    <div className="flex items-center gap-1" style={{ "--wails-draggable": "no-drag" } as React.CSSProperties}>
-      <button 
-        onClick={handleMinimise}
-        className="h-8 w-8 hover:bg-black/5 dark:hover:bg-white/10 rounded-md text-text-primary transition-colors flex items-center justify-center active:scale-95"
-        title="最小化"
-        type="button"
-      >
-        <Minus size={14} strokeWidth={2.5} />
-      </button>
-      <button 
-        onClick={handleToggleMaximise}
-        className="h-8 w-8 hover:bg-black/5 dark:hover:bg-white/10 rounded-md text-text-primary transition-colors flex items-center justify-center active:scale-95"
-        title="最大化/还原"
-        type="button"
-      >
-        <Square size={12} strokeWidth={3} />
-      </button>
-      <button 
-        onClick={handleClose}
-        className="h-8 w-8 hover:bg-danger/10 hover:text-danger rounded-md text-text-primary transition-colors flex items-center justify-center active:scale-95"
-        title="关闭"
-        type="button"
-      >
-        <X size={14} strokeWidth={2.5} />
-      </button>
-    </div>
+    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', '--wails-draggable': 'no-drag' }}>
+      <Tooltip title={t('window.minimize')}>
+        <IconButton
+          size="small"
+          aria-label={t('window.minimize')}
+          onClick={handleMinimise}
+          sx={{ color: 'text.primary' }}
+        >
+          <Minus size={18} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title={t('window.maximize_restore')}>
+        <IconButton
+          size="small"
+          aria-label={t('window.maximize_restore')}
+          onClick={handleToggleMaximise}
+          sx={{ color: 'text.primary' }}
+        >
+          <Square size={18} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title={t('window.close')}>
+        <IconButton
+          size="small"
+          aria-label={t('window.close')}
+          color="error"
+          onClick={handleClose}
+        >
+          <X size={18} />
+        </IconButton>
+      </Tooltip>
+    </Box>
   );
 });
 

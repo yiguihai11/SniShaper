@@ -2,136 +2,86 @@
 
 [中文](README.md) | [English](README_EN.md) | [Русский](README_RU.md)
 
-[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat-square&logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)]()
-[![Wiki](https://img.shields.io/badge/Docs-Wiki-orange?style=flat-square)](https://github.com/coolapijust/snishaper/wiki)
-[![GitHub Release](https://img.shields.io/github/v/release/SniShaper/SniShaper?style=flat-square&logo=github)](https://github.com/SniShaper/SniShaper/releases)
-[![GitHub Downloads](https://img.shields.io/github/downloads/SniShaper/SniShaper/total?style=flat-square&logo=github)](https://github.com/SniShaper/SniShaper/releases)
-[![GitHub last commit](https://img.shields.io/github/last-commit/SniShaper/SniShaper?style=flat-square&logo=git)](https://github.com/SniShaper/SniShaper/commits/main)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/SniShaper/SniShaper/build.yml?style=flat-square&logo=githubactions&label=CI)](https://github.com/SniShaper/SniShaper/actions)
+[![Go Version](https://img.shields.io/badge/Go-1.27%2B-00ADD8?style=flat&logo=go)](https://golang.org) [![Core](https://img.shields.io/badge/Core-snishaper--core-00ADD8?style=flat&logo=go)](https://github.com/SnishaperTeam/snishaper-core) [![License](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat&logo=open-source-initiative)](LICENSE) [![Wiki](https://img.shields.io/badge/Docs-Wiki-orange?style=flat&logo=readthedocs)](https://github.com/SnishaperTeam/SniShaper/wiki) [![GitHub Release](https://img.shields.io/github/v/release/SnishaperTeam/SniShaper?style=flat&logo=github&label=Release)](https://github.com/SnishaperTeam/SniShaper/releases) [![GitHub Downloads](https://img.shields.io/github/downloads/SnishaperTeam/SniShaper/total?style=flat&logo=github&label=Downloads)](https://github.com/SnishaperTeam/SniShaper/releases) [![GitHub last commit](https://img.shields.io/github/last-commit/SnishaperTeam/SniShaper?style=flat&logo=git&label=Last%20Commit)](https://github.com/SnishaperTeam/SniShaper/commits/main) [![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/SnishaperTeam/SniShaper/build.yml?style=flat&logo=githubactions&label=CI)](https://github.com/SnishaperTeam/SniShaper/actions)
 
-**SniShaper** is a local proxy tool designed for complex network environments. It integrates multiple technologies, including **ECH Injection**, **TLS-RF Fragmentation**, **QUIC Connection Rebuilding**, and **Lightweight Server Mode Relay**, aiming to provide users with a stable access experience.
+**SniShaper** is a local proxy tool for complex network environments, using **ECH Injection**, **TLS Fragmentation**, **QUIC Conversion**, **Session Migration** and other solutions to deliver a stable and flexible browsing experience.
+
+This project provides cross-platform support. See **[Platform_EN.md](docs/Platform_EN.md)**.
+
+---
+
+## Sister project: FlowWeaver
+
+[**FlowWeaver**](https://github.com/SnishaperTeam/FlowWeaver) is the full-featured branch of this project, led by the same maintainer. Both are **actively maintained**:
+
+|                | SniShaper (this repository)                         | [FlowWeaver](https://github.com/SnishaperTeam/FlowWeaver)         |
+| -------------- | --------------------------------------------------- | ----------------------------------------------------------------- |
+| Focus          | Lightweight proxy server                            | Full-featured client / gateway                                    |
+| Core strengths | ECH injection, TLS fragmentation, session migration | Clash subscriptions, multi-protocol nodes, WireGuard, TUN gateway |
+
+They keep separate codebases and evolve independently. Subscription and rule files are format-compatible. If you need **subscription import, multi-protocol node selection or WireGuard tunnels**, use FlowWeaver.
+
+Both projects take their proxy engine from the standalone **[snishaper-core](https://github.com/SnishaperTeam/snishaper-core)** library: the proxy server, rule engine, DoH resolver, certificate manager and TUN data plane live there, while this repository keeps only the application layer (GUI, CLI, system integration and rule data).
+
+---
+
+## Community
+
+Join the QQ group **[Snishaper and FlowWeaver building](https://qm.qq.com/q/GtBOkAOiME)** to talk directly with SniShaper and FlowWeaver users and developers, report issues and send suggestions.
+
+---
+
+## TODO
+
+To learn about the next development plan and completed tasks, please refer to [todo.md](todo.md).
 
 ---
 
 ## Features
 
-- **Six-mode comprehensive coverage**: Supports everything from lightweight `transparent` to advanced `server` forwarding to meet different needs.
-- **Flexible strategies**:
-  - **TLS-RF (TLS Fragmentation)**: Bypasses precise SNI-based blocking through fragmentation.
-  - **QUIC Replay**: Bypasses conventional SNI detection using quic-go's obfuscation features.
-  - **ECH Injection**: Automatically fetches and injects echconfig.
-- **Smart Routing**: Automatically identifying blocked domains based on GFWList, allowing connection to most sites outside rules without manual configuration.
+- **Multi-Mode Proxy**: MITM (man-in-the-middle), Transparent, TLS-RF (TLS fragmentation), QUIC, Migration (session migration), Direct — covering a wide range of site scenarios.
+- **TUN Virtual NIC**: Transparent global traffic hijacking, auto-routing and DNS hijacking.
+- **ECH Injection**: Automatically fetches and injects ECH Config, with DoH discovery and hot-reload.
+- **Smart Routing**: Auto-identifies blocked domains based on GFWList, automatically covering many sites not included in the rules.
+- **Encrypted DNS**: Built-in anti-pollution DNS resolver with multi-node failover for stable resolution.
+- **Cloudflare IP Pool**: Auto speed-test, health check, and refresh.
+- **NAT64 Support**: More flexible IP egress, enabling service access under IP blocking.
+- **Evolution Mode**: Automatically tests combinations of rules to find the optimal access method for a target site and applies it with one click.
 
 ---
 
 ## Quick Start
 
-### 1. Run
-Download the [latest version](https://github.com/coolapijust/snishaper/releases) and run `snishaper.exe`.
+The project started out Windows-only and later added Linux support. It now ships both a GUI and a CLI.
 
-### 2. Certificate Reinstallation
-Click "Certificate Management" -> "**Click to Reinstall Certificate**" in the main interface.
+For most users, we recommend downloading the latest stable Windows build straight from [Releases](https://github.com/SnishaperTeam/SniShaper/releases).
 
-### 3. Configure and Start
-The software includes a rich set of official rules. You can also customize your own rules in the "Rule Panel" based on actual conditions, and finally click "**Start Proxy**".
+For the other platforms and for build instructions, see the following documents:
+
+- **[Platform_EN.md](docs/Platform_EN.md)** — per-platform quick start, CLI usage and mobile companions.
+- **[build_EN.md](docs/build_EN.md)** — build guide and the 12-target artifact matrix.
 
 ---
 
 ## Documentation
 
-For more detailed technical principles, deployment tutorials, and customization guides, please refer to the [**GitHub Wiki**](https://github.com/coolapijust/snishaper/wiki):
+For detailed technical principles and custom rule guides, refer to the [**GitHub Wiki**](https://github.com/SnishaperTeam/SniShaper/wiki):
 
-- **[Core Mode Introduction](https://github.com/coolapijust/snishaper/wiki/Core-Proxy-Modes)**: Learn about the operation principles of TLS-RF, QUIC, and Server modes.
-- **[Rule Customization Guide](https://github.com/coolapijust/snishaper/wiki/Custom-Rules-Guide)**: Learn how to develop targeted rules.
-- **[Interface Configuration Practice](https://github.com/coolapijust/snishaper/wiki/GUI-Configuration)**: Learn how to quickly configure rules in the GUI.
-- **[Server Deployment](https://github.com/coolapijust/snishaper/wiki/Server-Deployment)**: Set up your own Server node on CF Workers or VPS.
-- **[Common Troubleshooting](https://github.com/coolapijust/snishaper/wiki/FAQ)**: Resolve certificate warnings, ineffective rules, and other common issues.
+- **[Core Mode Introduction](https://github.com/SnishaperTeam/SniShaper/wiki/Core-Proxy-Modes)**: Understand TLS-RF, QUIC and Server mode operation.
+- **[Rule Customization Guide](https://github.com/SnishaperTeam/SniShaper/wiki/Custom-Rules-Guide)**: Learn how to develop targeted rules.
+- **[GUI Configuration Practice](https://github.com/SnishaperTeam/SniShaper/wiki/GUI-Configuration)**: Quickly configure rules in the GUI.
+- **[FAQ](https://github.com/SnishaperTeam/SniShaper/wiki/FAQ)**: Resolve certificate warnings, rule issues and other common problems.
+- **[Collaborator Agreement](docs/COLLABORATOR_AGREEMENT.md)**: Terms, invitation and acceptance process for becoming a repository collaborator.
 
 ---
 
 ## Build and Development
 
-This project is built based on **Wails v3**.
+The frontend is currently built with **Wails v3 + React 19 + MUI**, with the core developed in **Go**, supporting Windows / Linux dual-platform GUI and cross-platform CLI for a total of 12 build targets. The full build guide is in **[build_EN.md](docs/build_EN.md)**.
 
-```powershell
-# Clone the repository
-git clone https://github.com/SniShaper/snishaper.git
-cd snishaper
-
-# Install frontend dependencies
-cd frontend
-npm install
-
-# Build frontend static resources
-npm run build
-cd ..
-
-# Complete the full compilation in one go (interactive mode)
-powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
-
-# Or with PowerShell 7
-pwsh -ExecutionPolicy Bypass -File .\build_windows.ps1
-
-# Go main program compilation (script auto-runs go mod download)
-go build -ldflags="-s -w" -o "build/bin/snishaper.exe"
-```
-
-### Build Script Command-Line Parameters
-
-`build_windows.ps1` supports the following parameters to skip interactive prompts:
-
-| Parameter | Values | Description |
-|-----------|--------|-------------|
-| `-Build` | `frontend` / `backend` / `all` | Specify build target |
-| `-Lang` | `en` / `cn` / `ru` | Specify interface language |
-| `-InstallDeps` | No value (switch) | Install frontend npm dependencies |
-| `-BuildMsix` | No value (switch) | Build MSIX installation package |
-| `-SkipSign` | No value (switch) | Skip MSIX signing, output file will have `unsigned_` prefix (requires `-BuildMsix`) |
-| `-Silent` | No value (switch) | Silent mode, skip all interactive prompts |
-
-**Usage examples:**
-
-```powershell
-# Build frontend only (Chinese interface)
-.\build_windows.ps1 -Build frontend -Lang cn
-
-# Build backend only (English interface)
-.\build_windows.ps1 -Build backend -Lang en
-
-# Build both frontend and backend, with dependency install
-.\build_windows.ps1 -Build all -Lang cn -InstallDeps
-
-# Build both and generate MSIX package (signed by default)
-.\build_windows.ps1 -Build all -BuildMsix
-
-# Build both and generate unsigned MSIX (skip signing)
-.\build_windows.ps1 -Build all -BuildMsix -SkipSign
-
-# Silent mode (for CI/CD, no interaction)
-.\build_windows.ps1 -Silent
-
-# Silent mode with build and packaging (skip signing)
-.\build_windows.ps1 -Build all -Silent -BuildMsix -SkipSign
-
-# No parameters = interactive mode (original behavior)
-.\build_windows.ps1
-```
-
-Development environment recommendations:
-
-- `Go 1.25+`
-- `Node.js 24+`
-- `npm 11+`
-
-Build outputs:
-
-- Frontend assets located at `frontend/dist`
-- Executable located at `build/bin/snishaper.exe`
+We will complete a native GUI implementation in an upcoming stable release, to reduce the frontend's memory footprint.
 
 ---
-## Cross-platform
-This program supports Windows and Linux platforms. For the Linux version, please refer to [Linux Version](https://github.com/dongzheyu/SniShaper-Linux/).
 
 ## Acknowledgements
 
@@ -139,26 +89,43 @@ This project has benefited from the inspiration of the following excellent open-
 
 - [DoH-ECH-Demo](https://github.com/0xCaner/DoH-ECH-Demo)
 - [lumine](https://github.com/moi-si/lumine)
-- [usque](https://github.com/Diniboy1123/usque)
 
-## Contributors
+## Project Activity & Contributors
 
-Thanks to the following contributors for their contributions to this repository:
+### Activity Badges
 
-| <a href="https://github.com/mechrevo"><img src="https://avatars.githubusercontent.com/mechrevo" width="40" height="40" style="border-radius: 50%;" alt="mechrevo" /></a> | <a href="https://github.com/dongzheyu"><img src="https://avatars.githubusercontent.com/dongzheyu" width="40" height="40" style="border-radius: 50%;" alt="dongzheyu" /></a> | <a href="https://github.com/JetCPP-dongle"><img src="https://avatars.githubusercontent.com/JetCPP-dongle" width="40" height="40" style="border-radius: 50%;" alt="JetCPP-dongle" /></a> |
-| :---: | :---: | :---: |
-| [mechrevo](https://github.com/mechrevo) | [dongzheyu](https://github.com/dongzheyu) | [JetCPP-dongle](https://github.com/JetCPP-dongle) |
+[![GitHub contributors](https://img.shields.io/github/contributors/SnishaperTeam/SniShaper?style=flat&label=Total Contributors)](https://github.com/SnishaperTeam/SniShaper/graphs/contributors)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/SnishaperTeam/SniShaper?style=flat&label=Monthly Commits)](https://github.com/SnishaperTeam/SniShaper/graphs/contributors)
+[![GitHub last commit](https://img.shields.io/github/last-commit/SnishaperTeam/SniShaper?style=flat&label=Last Commit)](https://github.com/SnishaperTeam/SniShaper/commits/main)
+
+### Activity Trend
+
+<div align="center">
+<a href="https://repobeats.axiom.co/" target="_blank">
+<img src="https://repobeats.axiom.co/api/embed/f62c98a5231da45588ee71f26e3c1cc3f64edb6b.svg" alt="Repobeats analytics" />
+</a>
+</div>
+
+### Contributors Graph
+
+<div align="center">
+<a href="https://github.com/SnishaperTeam/SniShaper/graphs/contributors" target="_blank">
+<img src="https://contrib.rocks/image?repo=SnishaperTeam/SniShaper" alt="Contributors" />
+</a>
+</div>
+
 ## Star History
 
-<a href="https://www.star-history.com/?repos=snishaper/snishaper&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=snishaper%2Fsnishaper&type=timeline&logscale=&releases=&legend=bottom-right">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=snishaper/snishaper&type=date&theme=dark&legend=top-left" />
-<source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=snishaper/snishaper&type=date&legend=top-left" />
-<img alt="Star History Chart" src="https://api.star-history.com/chart?repos=snishaper/snishaper&type=date&legend=top-left" />
+<source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=snishaper/snishaper&type=timeline&theme=dark&logscale&legend=bottom-right" />
+<source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=snishaper/snishaper&type=timeline&logscale&legend=bottom-right" />
+<img alt="Star History Chart" src="https://api.star-history.com/chart?repos=snishaper/snishaper&type=timeline&logscale&legend=bottom-right" />
 </picture>
 </a>
 
 ---
+
 ## License
 
-[MIT License](LICENSE)
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).

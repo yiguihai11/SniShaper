@@ -1,40 +1,72 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import {
-  Trash2, Shield, Server, Zap, Lock, History, PlusCircle, Activity
+  Delete, Shield, Bolt, Lock, History, AddCircle, Globe, Activity, AlertCircle
 } from '../lib/icons';
 import {
-  GetServerConfig, UpdateServerConfig, GetECHProfiles,
-  DeleteECHProfile, TestServerNode
+  GetECHProfiles, DeleteECHProfile, GetNAT64Profiles, DeleteNAT64Profile, TestNAT64Profile,
+  GetMigrationServer, SetMigrationServer, TestMigration
 } from '../api/bindings';
-import { ServiceCard } from '../components/ui/Card';
-import { Button } from '../components/ui/Button';
-import { EmptyState } from '../components/ui/EmptyState';
+import {
+  Box, Typography, Button, IconButton, TextField, Grid, useColorScheme,
+} from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import Modal from '../components/Modal';
 import ECHProfileForm from '../components/ECHProfileForm';
+import NAT64ProfileForm from '../components/NAT64ProfileForm';
 import { useTranslation } from '../i18n/I18nContext';
+import { toast } from '../lib/toast';
+import { SettingsCtx } from '../App';
 
 const Proxies: React.FC = () => {
   const { t } = useTranslation();
-  const [serverConfig, setServerConfig] = useState<{ host: string, auth: string }>({ host: '', auth: '' });
+  const { mode } = useColorScheme();
+  const { cache } = useContext(SettingsCtx);
+  const ipv6Available = cache.ipv6Available !== false;
   const [echProfiles, setEchProfiles] = useState<any[]>([]);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState('');
+  const [nat64Profiles, setNat64Profiles] = useState<any[]>([]);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<any>(null);
 
+  const [isNAT64ModalOpen, setIsNAT64ModalOpen] = useState(false);
+  const [editingNAT64, setEditingNAT64] = useState<any>(null);
+
+  const [testingMap, setTestingMap] = useState<Record<string, boolean>>({});
+  const [testResults, setTestResults] = useState<Record<string, string>>({});
+
+  const [migrationServer, setMigrationServerState] = useState('');
+  const [migrationServerInput, setMigrationServerInput] = useState('');
+  const [migrationSaving, setMigrationSaving] = useState(false);
+  const [migrationTesting, setMigrationTesting] = useState(false);
+
   const loadData = async () => {
-    const [e] = await Promise.all([GetECHProfiles()]);
+    const [e, n, ms] = await Promise.all([GetECHProfiles(), GetNAT64Profiles(), GetMigrationServer()]);
     setEchProfiles(e || []);
+    setNat64Profiles(n || []);
+    setMigrationServerState(String(ms || ''));
+    setMigrationServerInput(String(ms || ''));
   };
 
-  const loadServerConfig = async () => {
-    const s = await GetServerConfig();
-    setServerConfig({ host: s.host || '', auth: s.auth || '' });
+  const handleTestNAT64 = async (profile: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const id = profile.id;
+    setTestingMap((prev) => ({ ...prev, [id]: true }));
+    setTestResults((prev) => ({ ...prev, [id]: '' }));
+    try {
+      const ms = await TestNAT64Profile(profile.prefix);
+      setTestResults((prev) => ({ ...prev, [id]: `${ms} ms` }));
+      toast.success(t('proxies.notifications.connect_success', { name: profile.name, ms }));
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      setTestResults((prev) => ({ ...prev, [id]: t('common.failed') }));
+      toast.error(t('proxies.notifications.connect_failed', { name: profile.name, error: errMsg }));
+    } finally {
+      setTestingMap((prev) => ({ ...prev, [id]: false }));
+    }
   };
 
   useEffect(() => {
     loadData();
-    loadServerConfig();
     const timer = setInterval(loadData, 3000);
     return () => clearInterval(timer);
   }, []);
@@ -47,132 +79,263 @@ const Proxies: React.FC = () => {
   };
   const handleFormSuccess = () => { setIsModalOpen(false); loadData(); };
 
-  const handleSaveServer = async () => {
-    await UpdateServerConfig(serverConfig.host, serverConfig.auth);
-    await loadServerConfig();
+  const handleAddNAT64 = () => { setEditingNAT64(null); setIsNAT64ModalOpen(true); };
+  const handleEditNAT64 = (profile: any) => { setEditingNAT64(profile); setIsNAT64ModalOpen(true); };
+  const handleDeleteNAT64 = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm(t('proxies.delete_nat64_confirm'))) { await DeleteNAT64Profile(id); loadData(); }
+  };
+  const handleNAT64FormSuccess = () => { setIsNAT64ModalOpen(false); loadData(); };
+
+  const handleSaveMigration = async () => {
+    setMigrationSaving(true);
+    try {
+      await SetMigrationServer(migrationServerInput.trim());
+      setMigrationServerState(migrationServerInput.trim());
+      toast.success(t('common.success'));
+    } catch (err: any) {
+      toast.error(err?.message || String(err));
+    } finally {
+      setMigrationSaving(false);
+    }
   };
 
+  const handleTestMigration = async () => {
+    const server = migrationServerInput.trim() || migrationServer;
+    if (!server) {
+      toast.error(t('proxies.notifications.migration_required'));
+      return;
+    }
+    setMigrationTesting(true);
+    try {
+      const msg = await TestMigration(server);
+      toast.success(msg || t('proxies.notifications.test_success'));
+    } catch (err: any) {
+      toast.error(err?.message || String(err));
+    } finally {
+      setMigrationTesting(false);
+    }
+  };
+
+  const cardHoverSx = (enabled: boolean) => enabled
+    ? { cursor: 'pointer', '&:hover': { boxShadow: 3, borderColor: 'primary.main' } }
+    : { cursor: 'default' };
+
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-      <header>
-        <h1 className="text-3xl font-black tracking-tighter">{t('proxies.title')}</h1>
-      </header>
+    <Box sx={{ flexGrow: 1, minHeight: 0, width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Box sx={{ pt: 4, flexShrink: 0, display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'flex-end' }, gap: 2, mb: 6 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ p: 1.25, borderRadius: 1.5, border: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), borderColor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+            <Shield size={20} />
+          </Box>
+          <Typography variant="h5" sx={{ fontWeight: 700, letterSpacing: '-0.02em' }}>{t('proxies.title')}</Typography>
+        </Box>
+      </Box>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <ServiceCard
-          title={t('proxies.server_node')}
-          icon={<Server size={20} />}
-          status={
-            <Button
-              onClick={async () => {
-                setTesting(true);
-                try {
-                  const duration = await TestServerNode();
-                  setTestResult(`${duration}ms`);
-                } catch (err: any) {
-                  const msg = String(err).replace('Error: ', '');
-                  setTestResult(msg || t('common.error'));
-                }
-                setTesting(false);
-                setTimeout(() => setTestResult(''), 3000);
-              }}
-              loading={testing}
-              variant="ghost"
-              size="xs"
-              icon={<Activity size={14} />}
-            >
-              {testing ? t('proxies.testing') : (testResult || t('proxies.test_conn'))}
+      <Box sx={{ flexGrow: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', width: '100%', pb: 6 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 0.5, color: 'text.secondary' }}>
+          <Globe size={18} aria-hidden />
+          <Typography variant="body2" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 1 }}>
+            {t('proxies.migration_service')}
+          </Typography>
+        </Box>
+
+        <Box sx={{ p: 2.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, boxShadow: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <Typography variant="caption" sx={{ fontSize: 11, color: 'text.secondary' }}>{t('proxies.migration_service_desc')}</Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <TextField
+              type="text"
+              size="small"
+              value={migrationServerInput}
+              onChange={(e) => setMigrationServerInput(e.target.value)}
+              placeholder={t('proxies.migration_service_hint')}
+              sx={{ flex: 1, '& input': { fontSize: '0.75rem', fontWeight: 500 } }}
+            />
+            <Button onClick={handleSaveMigration} disabled={migrationSaving} variant="outlined" size="small" sx={{ flexShrink: 0 }}>
+              {migrationSaving ? '...' : t('common.save')}
             </Button>
-          }
-        >
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-text-muted uppercase tracking-widest px-1" htmlFor="node-host">{t('proxies.node_host')}</label>
-              <input
-                id="node-host"
-                type="text"
-                value={serverConfig.host}
-                onChange={(e) => setServerConfig({...serverConfig, host: e.target.value})}
-                placeholder="proxy.yourdomain.workers.dev"
-                className="w-full bg-background-soft border border-border px-4 py-2.5 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-text-muted uppercase tracking-widest px-1" htmlFor="auth-secret">{t('proxies.auth_secret')}</label>
-              <input
-                id="auth-secret"
-                type="password"
-                value={serverConfig.auth}
-                onChange={(e) => setServerConfig({...serverConfig, auth: e.target.value})}
-                placeholder={t('proxies.auth_placeholder')}
-                className="w-full bg-background-soft border border-border px-4 py-2.5 rounded-xl text-sm focus:ring-2 focus:ring-accent outline-none transition-all"
-              />
-            </div>
-            <Button onClick={handleSaveServer} variant="primary" className="w-full">{t('proxies.save_node')}</Button>
-          </div>
-        </ServiceCard>
-
-        <section className="lg:col-span-2 space-y-4">
-          <div className="flex items-center justify-between px-1">
-            <div className="flex items-center gap-2 text-text-secondary">
-              <Shield size={18} aria-hidden />
-              <h2 className="text-sm font-bold uppercase tracking-wider">{t('proxies.ech_management')}</h2>
-            </div>
-            <Button onClick={handleAddProfile} variant="ghost" size="sm" icon={<PlusCircle size={14} />}>
-              {t('proxies.add_ech')}
+            <Button onClick={handleTestMigration} disabled={migrationTesting} variant="outlined" size="small" sx={{ flexShrink: 0 }}>
+              {migrationTesting ? t('proxies.testing') : t('proxies.test_connect')}
             </Button>
-          </div>
+          </Box>
+        </Box>
+      </Box>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {echProfiles.length === 0 ? (
-              <EmptyState
-                icon={<Lock size={32} strokeWidth={1.5} />}
-                title={t('proxies.no_ech')}
-                className="col-span-full py-12 bg-background-card border border-dashed border-border rounded-2xl"
-              />
-            ) : (
-              echProfiles.map((p) => (
-                <div
-                  key={p.id}
+      <Box sx={{ mt: 5, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 0.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'text.secondary' }}>
+            <Shield size={18} aria-hidden />
+            <Typography variant="body2" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('proxies.ech_management')}</Typography>
+          </Box>
+          <Button onClick={handleAddProfile} variant="outlined" size="small" startIcon={<AddCircle size={14} />}>
+            {t('proxies.add_ech')}
+          </Button>
+        </Box>
+
+        <Grid container spacing={2}>
+          {echProfiles.length === 0 ? (
+            <Grid size={12}>
+              <Box sx={{ py: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'text.secondary', opacity: 0.7, bgcolor: 'background.paper', border: '1px dashed', borderColor: 'divider', borderRadius: 2 }}>
+                <Lock size={32} strokeWidth={1.5} />
+                <Typography variant="body2" sx={{ mt: 1.5 }}>{t('proxies.no_ech')}</Typography>
+              </Box>
+            </Grid>
+          ) : (
+            echProfiles.map((p) => (
+              <Grid key={p.id} size={{ xs: 12, md: 6, xl: 4 }}>
+                <Box
                   onClick={() => handleEditProfile(p)}
-                  className="group p-5 bg-background-card border border-border rounded-2xl shadow-sm hover:shadow-md hover:border-accent/40 transition-all flex justify-between items-center cursor-pointer"
+                  sx={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2,
+                    p: 2.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2,
+                    boxShadow: 1, transition: 'all 0.2s',
+                    ...cardHoverSx(true),
+                  }}
                 >
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    <div className="w-10 h-10 rounded-2xl bg-success/10 text-success flex items-center justify-center shrink-0">
-                      <Zap size={18} fill="currentColor" className="opacity-80" aria-hidden />
-                    </div>
-                    <div className="overflow-hidden">
-                      <h3 className="text-sm font-bold truncate">{p.name}</h3>
-                      <div className="flex items-center gap-1.5 text-[10px] text-text-muted font-bold">
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0 }}>
+                    <Box sx={{ width: 40, height: 40, borderRadius: 2, bgcolor: 'rgba(34,197,94,0.1)', color: 'success.main', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Bolt size={18} fill="currentColor" aria-hidden />
+                    </Box>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{p.name}</Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.25, color: 'text.secondary' }}>
                         <History size={10} aria-hidden />
-                        {p.auto_update ? t('proxies.auto_sync') : t('proxies.static_config')}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    className="p-2 text-text-muted hover:text-danger opacity-0 group-hover:opacity-100 transition-all"
+                        <Typography variant="caption" sx={{ fontSize: 10, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                          {p.auto_update ? t('proxies.auto_sync') : t('proxies.static_config')}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Box>
+                  <IconButton
+                    size="small"
+                    aria-label={t('proxies.delete_aria', { name: p.name })}
                     onClick={(e) => handleDeleteProfile(p.id, e)}
-                    aria-label={`删除 ${p.name}`}
+                    sx={{ color: 'text.secondary', flexShrink: 0, '&:hover': { color: 'error.main', bgcolor: 'action.hover' } }}
                   >
-                    <Trash2 size={18} />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-      </div>
+                    <Delete size={18} />
+                  </IconButton>
+                </Box>
+              </Grid>
+            ))
+          )}
+        </Grid>
+      </Box>
+
+      <Box sx={{ mt: 5, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 0.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'text.secondary' }}>
+            <Globe size={18} aria-hidden />
+            <Typography variant="body2" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('proxies.nat64_management')}</Typography>
+          </Box>
+          <Button onClick={handleAddNAT64} variant="outlined" size="small" startIcon={<AddCircle size={14} />}>
+            {t('proxies.add_nat64')}
+          </Button>
+        </Box>
+
+        {!ipv6Available && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderRadius: 2, bgcolor: 'rgba(245,158,11,0.05)', border: 1, borderColor: 'rgba(245,158,11,0.3)', color: 'warning.main', minWidth: 0 }}>
+              <AlertCircle size={14} aria-hidden />
+              <Typography variant="caption" sx={{ fontSize: 11, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', py: 0.25, outline: '1px solid transparent' }}>
+                {t('network.ipv6_disabled_title')}：{t('network.ipv6_disabled_desc')}
+              </Typography>
+            </Box>
+        )}
+
+        <Grid container spacing={2}>
+          {nat64Profiles.length === 0 ? (
+            <Grid size={12}>
+              <Box sx={{ py: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'text.secondary', opacity: 0.7, bgcolor: 'background.paper', border: '1px dashed', borderColor: 'divider', borderRadius: 2 }}>
+                <Activity size={32} strokeWidth={1.5} />
+                <Typography variant="body2" sx={{ mt: 1.5 }}>{t('proxies.no_nat64')}</Typography>
+              </Box>
+            </Grid>
+          ) : (
+            nat64Profiles.map((p) => (
+              <Grid key={p.id} size={{ xs: 12, md: 6, xl: 4 }}>
+                <Box
+                  onClick={() => handleEditNAT64(p)}
+                  sx={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2,
+                    p: 2.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2,
+                    boxShadow: 1, transition: 'all 0.2s',
+                    ...cardHoverSx(true),
+                  }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0 }}>
+                    <Box sx={{ width: 40, height: 40, borderRadius: 2, bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), color: 'primary.main', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Globe size={18} aria-hidden />
+                    </Box>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{p.name}</Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mt: 0.25, color: 'text.secondary', minWidth: 0 }}>
+                        <Activity size={10} aria-hidden />
+                        <Typography variant="caption" sx={{ fontSize: 10, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+                          {t('rules.form.prefix_label', { prefix: p.prefix })}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+                    {testResults[p.id] && (
+                      <Box
+                        component="span"
+                        sx={{
+                          fontSize: 10, fontWeight: 700, px: 1, py: 0.25, borderRadius: 1, border: 1,
+                          color: testResults[p.id] === t('common.failed') ? 'error.main' : 'success.main',
+                          borderColor: testResults[p.id] === t('common.failed') ? 'rgba(239,68,68,0.2)' : 'rgba(34,197,94,0.2)',
+                          bgcolor: testResults[p.id] === t('common.failed') ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)',
+                        }}
+                      >
+                        {testResults[p.id]}
+                      </Box>
+                    )}
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={testingMap[p.id]}
+                      onClick={(e) => handleTestNAT64(p, e)}
+                      sx={{ fontSize: 10, fontWeight: 700, minWidth: 0, flexShrink: 0 }}
+                    >
+                      {testingMap[p.id] ? t('proxies.testing') : t('proxies.test_connect')}
+                    </Button>
+                    <IconButton
+                      size="small"
+                      aria-label={t('proxies.delete_aria', { name: p.name })}
+                      onClick={(e) => handleDeleteNAT64(p.id, e)}
+                      sx={{ color: 'text.secondary', flexShrink: 0, '&:hover': { color: 'error.main', bgcolor: 'action.hover' } }}
+                    >
+                      <Delete size={16} />
+                    </IconButton>
+                  </Box>
+                </Box>
+              </Grid>
+            ))
+          )}
+        </Grid>
+      </Box>
+      </Box>
 
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title={editingProfile ? t('proxies.edit_ech') : t('proxies.probe_ech')}
         subtitle={editingProfile ? `${t('proxies.modifying')}: ${editingProfile.name || editingProfile.Name}` : t('proxies.probe_hint')}
-        maxWidth="max-w-3xl"
+        maxWidth="48rem"
       >
         <ECHProfileForm initialData={editingProfile} onSuccess={handleFormSuccess} onCancel={() => setIsModalOpen(false)} />
       </Modal>
-    </div>
+
+      <Modal
+        isOpen={isNAT64ModalOpen}
+        onClose={() => setIsNAT64ModalOpen(false)}
+        title={editingNAT64 ? t('proxies.edit_nat64') : t('proxies.add_nat64')}
+        subtitle={editingNAT64 ? `${t('proxies.modifying')}: ${editingNAT64.name}` : t('proxies.nat64_form_subtitle')}
+        maxWidth="48rem"
+      >
+        <NAT64ProfileForm initialData={editingNAT64} onSuccess={handleNAT64FormSuccess} onCancel={() => setIsNAT64ModalOpen(false)} />
+      </Modal>
+    </Box>
   );
 };
 

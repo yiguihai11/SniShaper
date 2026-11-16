@@ -3,6 +3,13 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
+	"time"
+
+	"snishaper/app"
+	"snishaper/core"
+	"snishaper/internal/cliapp"
+	"snishaper/pkg/sysproxy"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -15,120 +22,216 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
-	if hasLaunchArg("--core") {
-		if err := runCoreMain(); err != nil {
+	if app.HasLaunchArg("--core") {
+		if err := core.RunCoreMain(); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
 
-	recoverBrokenSingleInstance("com.snishaper.desktop")
+	// SniShaperAutostart service host (the autostart "service" method): the
+	// SCM starts this process with --service-host in session 0, so it must
+	// be handled before the desktop wait and the non-interactive CLI
+	// fallback below, which would otherwise swallow it (the service host
+	// command line can carry --startup too).
+	if app.HasLaunchArg("--service-host") {
+		if err := app.RunAutoStartServiceHost(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
-	app := NewApp()
+	// Bounded wait for the interactive desktop during autostart. In the early
+	// logon phase, the shell may not be ready, causing OpenInputDesktop (inside
+	// NonInteractiveSession) to fail. Without this wait, the app would misjudge
+	// the environment, fall back to CLI mode, and exit silently, leaving no
+	// tray icon or proxy running. We only wait when explicitly launched via
+	// --startup to avoid affecting normal CLI invocations or session-0 services.
+	if app.HasLaunchArg("--startup") && app.NonInteractiveSession() {
+		log.Printf("[main] Early logon phase detected, waiting for interactive desktop...")
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			if !app.NonInteractiveSession() {
+				break // Desktop is ready, proceed to GUI
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if app.NonInteractiveSession() {
+			log.Printf("[main] Timeout waiting for desktop, falling back to CLI mode")
+		} else {
+			log.Printf("[main] Interactive desktop is ready, continuing to GUI")
+		}
+	}
 
-	wailsApp := application.New(application.Options{
+	// Bundled CLI mode. The desktop binary doubles as the headless CLI: an
+	// explicit marker (--cli, --serve, any CLI verb) or a launch without an
+	// interactive desktop (automation, services, winget's post-install
+	// executable validation runs the app in session 0, where a window cannot
+	// exist) routes into the shared dispatcher instead of the GUI. The
+	// headless defaults always apply here — no arguments print the command
+	// help and exit 0, and the interactive TUI stays with the standalone CLI
+	// binary — so an automated launcher can never be left hanging on a
+	// terminal that will never provide input.
+	if app.NonInteractiveSession() || cliapp.IsCLICommand(os.Args[1:]) {
+		if !app.NonInteractiveSession() {
+			app.AttachParentConsole()
+		}
+		os.Exit(cliapp.Run(os.Args[1:], true))
+	}
+
+	devSession := os.Getenv("FRONTEND_DEVSERVER_URL") != ""
+	if devSession {
+		log.Printf("[main] dev session (FRONTEND_DEVSERVER_URL=%s): staying in the foreground, no elevation, no single-instance take-over", os.Getenv("FRONTEND_DEVSERVER_URL"))
+	}
+
+	if !devSession && !app.HasLaunchArg("--elevated") && !core.IsProcessElevated() {
+		// Already running? Don't trigger a UAC prompt for a second instance.
+		if app.IsSingleInstanceRunning("com.snishaper.desktop") {
+			log.Printf("[main] Instance already running, skipping auto-elevate")
+		} else if err := core.ElevateSelf(); err != nil {
+			log.Printf("[main] Auto-elevate failed: %v, continuing without admin", err)
+		} else {
+			return // elevated instance will start
+		}
+	}
+
+	app.RecoverBrokenSingleInstance("com.snishaper.desktop")
+
+	if devSession {
+		if app.IsSingleInstanceRunning("com.snishaper.desktop") {
+			log.Printf("[main] dev session: another instance is running, proxy ports may conflict until it is closed")
+		}
+	} else if app.IsSingleInstanceRunning("com.snishaper.desktop") {
+		// Wake the running instance; retry to handle UIPI race where first instance hasn't yet allowed cross-integrity.
+		woke := false
+		for i := 0; i < 3; i++ {
+			if err := app.WakeSingleInstance("com.snishaper.desktop"); err == nil {
+				log.Printf("[main] Woke running instance, exiting second instance")
+				woke = true
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if woke {
+			return
+		}
+		log.Printf("[main] Failed to wake running instance, killing stale instance and taking over")
+		app.KillSingleInstance("com.snishaper.desktop")
+	}
+
+	a := app.NewApp()
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[main] Panic recovered, forcing cleanup: %v", r)
+		}
+		a.ForceCleanup()
+		// Force-disable system proxy even if ForceCleanup missed it — but
+		// only when it is the proxy this app configured; a user's own or
+		// third-party proxy setting must survive our exit.
+		if a.IsManagedSystemProxy() {
+			_ = sysproxy.DisableSystemProxy()
+		}
+	}()
+
+	opts := application.Options{
 		Name:        "snishaper",
 		Description: "SniShaper - Cloudflare IP Shaper",
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),
 		},
 		Services: []application.Service{
-			application.NewService(app),
+			application.NewService(a),
 		},
-		SingleInstance: &application.SingleInstanceOptions{
+		Icon:   trayIcon,
+		Logger: a.FrameworkLogger(),
+		// The app owns the window lifecycle on every desktop platform: a
+		// window that disappears must not end the process, because closing to
+		// the tray and hibernating both leave the app running with a tray icon.
+		Windows: application.WindowsOptions{
+			DisableQuitOnLastWindowClosed: true,
+		},
+		Linux: application.LinuxOptions{
+			DisableQuitOnLastWindowClosed: true,
+		},
+	}
+
+	if !devSession {
+		// The framework exits a second instance outright, which would end the
+		// `wails3 dev` run task (and its Vite server) the moment an instance is
+		// already running, so dev sessions opt out of the handshake entirely.
+		opts.SingleInstance = &application.SingleInstanceOptions{
 			UniqueID: "com.snishaper.desktop",
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
-				app.RevealMainWindow()
+				log.Printf("[single-instance] OnSecondInstanceLaunch args=%v", data.Args)
+				for _, arg := range data.Args {
+					if arg == "--tray-rebuild" {
+						log.Printf("[single-instance] tray rebuild requested by second launch")
+						a.RebuildSystemTray()
+						return
+					}
+				}
+				a.RevealMainWindow()
 			},
 			ExitCode: 0,
-		},
-		Icon: trayIcon,
-	})
-
-	app.wailsApp = wailsApp
-
-	// Create Tray
-	tray := wailsApp.SystemTray.New()
-	tray.SetIcon(trayIcon)
-	tray.SetDarkModeIcon(trayIcon)
-	tray.SetTooltip("SniShaper")
-	app.systemTray = tray
-
-	// Define Tray Menu
-	trayMenu := application.NewMenu()
-	trayMenu.Add("仪表盘").OnClick(func(ctx *application.Context) {
-		app.RevealMainWindow()
-	})
-	trayMenu.AddSeparator()
-
-	proxyLabel := "代理: 关"
-	if app.IsProxyRunning() {
-		proxyLabel = "代理: 开"
+		}
 	}
-	app.proxyItemV3 = trayMenu.AddCheckbox(proxyLabel, app.IsProxyRunning())
-	app.proxyItemV3.OnClick(func(ctx *application.Context) {
-		app.runSafeAsync("tray proxy toggle", func() {
-			if app.IsProxyRunning() {
-				_ = app.StopProxy()
-			} else {
-				_ = app.StartProxy()
-			}
-		})
-	})
 
-	systemProxyLabel := "系统代理: 关"
-	if app.GetSystemProxyStatus().Enabled {
-		systemProxyLabel = "系统代理: 开"
+	wailsApp := application.New(opts)
+
+	a.SetWailsApp(wailsApp)
+
+	if !devSession {
+		a.StartInstanceListener("com.snishaper.desktop")
+
+		app.AllowSingleInstanceCrossIntegrity("com.snishaper.desktop")
+		go func() {
+			for i := 0; i < 10; i++ {
+				app.AllowSingleInstanceCrossIntegrity("com.snishaper.desktop")
+				time.Sleep(100 * time.Millisecond)
+			}
+		}()
 	}
-	app.systemProxyItemV3 = trayMenu.Add(systemProxyLabel)
-	app.systemProxyItemV3.OnClick(func(ctx *application.Context) {
-		app.runSafeAsync("tray system proxy toggle", func() {
-			if app.GetSystemProxyStatus().Enabled {
-				_ = app.DisableSystemProxy()
-				return
-			}
-			if !app.IsProxyRunning() {
-				if err := app.StartProxy(); err != nil {
-					return
-				}
-			}
-			_ = app.EnableSystemProxy()
-		})
-	})
 
-
-	trayMenu.AddSeparator()
-	trayMenu.Add("退出").OnClick(func(ctx *application.Context) {
-		app.QuitApp()
-	})
-
-	tray.SetMenu(trayMenu)
-	app.trayMenuV3 = trayMenu
+	// Create Tray. The app owns the tray lifecycle so it can rebuild the icon
+	// when the shell drops it.
+	a.BuildSystemTray(wailsApp, trayIcon)
 
 	// Create Main Window
-	app.mainWindow = wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+	hidden := a.ShouldStartHidden()
+	log.Printf("[startup] ShouldStartHidden=%v Hidden=%v", hidden, hidden)
+	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
-		Title:            "snishaper",
+		Title:            "SniShaper",
 		Width:            1024,
 		Height:           768,
 		URL:              "/",
 		Frameless:        true,
-		Hidden:           app.ShouldStartHidden(),
+		Hidden:           hidden,
 		BackgroundColour: application.NewRGB(27, 38, 54),
 	})
-	app.mainWindow.OnWindowEvent(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		if !app.shouldQuit {
-			if app.GetCloseToTray() {
-				event.Cancel()
-				app.mainWindow.Hide()
-			} else {
-				app.QuitApp()
-			}
+	a.AttachMainWindowHandlers(mainWindow)
+	mainWindow.OnWindowEvent(events.Common.WindowRuntimeReady, func(event *application.WindowEvent) {
+		if !a.ShouldStartHidden() {
+			a.RevealMainWindow()
 		}
 	})
-	tray.OnClick(func() {
-		app.RevealMainWindow()
-	})
+	a.SetMainWindow(mainWindow)
+	log.Printf("[startup] ShouldStartHidden=%v closeToTray=%v hibernate=%v", a.ShouldStartHidden(), a.GetCloseToTray(), a.GetHibernateOnClose())
+	go func() {
+		time.Sleep(800 * time.Millisecond)
+		shouldHide := a.ShouldStartHidden()
+		vis := a.IsMainWindowVisible()
+		hib := a.IsHibernated()
+		log.Printf("[startup] post-check shouldHide=%v isVisible=%v hibernated=%v", shouldHide, vis, hib)
+		if !shouldHide && !vis {
+			log.Printf("[startup] post-check: window not visible but should be, calling RevealMainWindow")
+			a.RevealMainWindow()
+			time.Sleep(300 * time.Millisecond)
+			vis2 := a.IsMainWindowVisible()
+			log.Printf("[startup] after Reveal isVisible=%v", vis2)
+		}
+	}()
 
 	err := wailsApp.Run()
 	if err != nil {

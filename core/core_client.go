@@ -1,0 +1,387 @@
+package core
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"net/rpc"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"snishaper/common"
+
+	"github.com/SnishaperTeam/snishaper-core/proxy"
+)
+
+// CoreClient is an RPC client that communicates with the core process.
+type CoreClient struct {
+	startMu sync.Mutex
+	tokenMu sync.Mutex
+	token   string
+}
+
+// NewCoreClient creates a new core RPC client.
+func NewCoreClient() *CoreClient {
+	return &CoreClient{}
+}
+
+func (c *CoreClient) loadTokenFromDisk() string {
+	// Must match the core's token location: per-user config dir, not the
+	// (possibly user-writable) exe dir.
+	tokenPath := filepath.Join(common.UserConfigDir(), "core_rpc_token")
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (c *CoreClient) readToken() string {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if c.token == "" {
+		c.token = c.loadTokenFromDisk()
+	}
+	return c.token
+}
+
+func (c *CoreClient) invalidateToken() {
+	c.tokenMu.Lock()
+	c.token = ""
+	c.tokenMu.Unlock()
+}
+
+// announceToken sends the client's token announcement so the core can reject
+// connections from processes that never read the token file. One length byte
+// plus the token: the core reads exactly those bytes and the gob stream
+// starts after them.
+func announceToken(conn net.Conn, token string) error {
+	if token == "" || len(token) > maxRPCTokenLen {
+		return fmt.Errorf("rpc token unavailable")
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(coreRPCHandshakeTimeout))
+	buf := make([]byte, 0, 1+len(token))
+	buf = append(buf, byte(len(token)))
+	buf = append(buf, token...)
+	_, err := conn.Write(buf)
+	return err
+}
+
+func (c *CoreClient) dial() (*rpc.Client, error) {
+	conn, err := net.DialTimeout("tcp", coreRPCAddr, 400*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	if err := announceToken(conn, c.readToken()); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return rpc.NewClient(conn), nil
+}
+
+// Call invokes an RPC method on the core process.
+func (c *CoreClient) Call(method string, args any, reply any) error {
+	client, err := c.dial()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Call(method, args, reply)
+}
+
+// Ping reports whether the core process is reachable and accepts our token
+// (instance-scoped: a stale token from a previous core instance yields false).
+func (c *CoreClient) Ping() bool {
+	var pong BoolReply
+	return c.Call("Core.Ping", AuthArgs{Token: c.readToken()}, &pong) == nil && pong.Value
+}
+
+// EnsureRunning makes sure the core process is alive and responding.
+func (c *CoreClient) EnsureRunning() error {
+	return c.ensureRunningWithElevation(false)
+}
+
+func (c *CoreClient) ensureRunningWithElevation(requireElevated bool) error {
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+
+	wasLogCaptureEnabled := false
+	wasProxyRunning := false
+	var pong BoolReply
+	if err := c.Call("Core.Ping", AuthArgs{Token: c.readToken()}, &pong); err == nil && pong.Value {
+		wasLogCaptureEnabled = c.IsLogCaptureEnabled()
+		wasProxyRunning = c.IsProxyRunning()
+		execPath, pathErr := os.Executable()
+		if pathErr != nil {
+			return pathErr
+		}
+		info, infoErr := c.getInfo()
+		currentFileInfo, currentErr := os.Stat(execPath)
+		isSameFile := false
+		if infoErr == nil && currentErr == nil {
+			isSameFile = sameExecutable(info.Executable, execPath) && (info.ModTime == currentFileInfo.ModTime().UnixNano())
+		}
+		if isSameFile && (!requireElevated || info.Elevated) {
+			return nil
+		}
+		var empty EmptyArgs
+		_ = c.Call("Core.Shutdown", AuthArgs{Token: c.readToken()}, &empty)
+		for i := 0; i < 10; i++ {
+			time.Sleep(100 * time.Millisecond)
+			if err := c.Call("Core.Ping", AuthArgs{Token: c.readToken()}, &pong); err != nil || !pong.Value {
+				break
+			}
+		}
+	}
+	execPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	c.invalidateToken()
+	if err := startCoreProcess(execPath, requireElevated); err != nil {
+		return err
+	}
+	for i := 0; i < 75; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if err := c.Call("Core.Ping", AuthArgs{Token: c.readToken()}, &pong); err == nil && pong.Value {
+			if wasLogCaptureEnabled {
+				var empty EmptyArgs
+				_ = c.Call("Core.StartLogCapture", EmptyArgs{}, &empty)
+			}
+			if wasProxyRunning {
+				var empty EmptyArgs
+				if err := c.Call("Core.StartProxy", EmptyArgs{}, &empty); err != nil {
+					return fmt.Errorf("restore proxy after core restart: %w", err)
+				}
+			}
+			if requireElevated {
+				info, infoErr := c.getInfo()
+				if infoErr != nil {
+					return infoErr
+				}
+				if !info.Elevated {
+					return fmt.Errorf("core restarted but is still not elevated")
+				}
+			}
+			return nil
+		}
+		// ping 失败：token 文件可能尚未写入或已被新 core 覆盖，下次重读磁盘
+		c.invalidateToken()
+	}
+	return fmt.Errorf("core process did not become ready after 75 retries (15s): check admin rights, antivirus, and core process logs")
+}
+
+func (c *CoreClient) getInfo() (CoreInfoReply, error) {
+	var reply CoreInfoReply
+	err := c.Call("Core.GetInfo", EmptyArgs{}, &reply)
+	return reply, err
+}
+
+// ReloadIfRunning tells the core to reload its configuration.
+func (c *CoreClient) ReloadIfRunning() {
+	var pong BoolReply
+	if err := c.Call("Core.Ping", AuthArgs{Token: c.readToken()}, &pong); err != nil || !pong.Value {
+		return
+	}
+	var empty EmptyArgs
+	_ = c.Call("Core.ReloadConfig", EmptyArgs{}, &empty)
+}
+
+// ReloadCertificateIfRunning tells the core to reload its certificate.
+func (c *CoreClient) ReloadCertificateIfRunning() {
+	var pong BoolReply
+	if err := c.Call("Core.Ping", AuthArgs{Token: c.readToken()}, &pong); err != nil || !pong.Value {
+		return
+	}
+	var empty EmptyArgs
+	_ = c.Call("Core.ReloadCertificate", EmptyArgs{}, &empty)
+}
+
+// ShutdownIfRunning shuts down the core process if it's ours (token-scoped:
+// a stale token cannot shut down a newly started core instance).
+func (c *CoreClient) ShutdownIfRunning() {
+	var pong BoolReply
+	if err := c.Call("Core.Ping", AuthArgs{Token: c.readToken()}, &pong); err != nil || !pong.Value {
+		return
+	}
+	var empty EmptyArgs
+	_ = c.Call("Core.Shutdown", AuthArgs{Token: c.readToken()}, &empty)
+}
+
+func (c *CoreClient) StartProxy() error {
+	if err := c.EnsureRunning(); err != nil {
+		return err
+	}
+	var empty EmptyArgs
+	return c.Call("Core.StartProxy", EmptyArgs{}, &empty)
+}
+
+func (c *CoreClient) StopProxy() error {
+	var empty EmptyArgs
+	return c.Call("Core.StopProxy", EmptyArgs{}, &empty)
+}
+
+func (c *CoreClient) IsProxyRunning() bool {
+	var reply BoolReply
+	return c.Call("Core.IsProxyRunning", EmptyArgs{}, &reply) == nil && reply.Value
+}
+
+func (c *CoreClient) GetStats() (int64, int64, int64) {
+	var reply StatsReply
+	if err := c.Call("Core.GetStats", EmptyArgs{}, &reply); err != nil {
+		return 0, 0, 0
+	}
+	return reply.Down, reply.Up, reply.Etc
+}
+
+func (c *CoreClient) StartTUN() error {
+	// Fast check: is the core already elevated? If not, tell user to restart as admin instead of
+	// attempting a costly restart-with-elevation that can hang on UAC for 15+ seconds.
+	var info CoreInfoReply
+	if err := c.Call("Core.GetInfo", EmptyArgs{}, &info); err != nil {
+		return fmt.Errorf("core not reachable: %w", err)
+	}
+	if !info.Elevated {
+		return fmt.Errorf("TUN 需要管理员权限，请以管理员身份重新运行 SniShaper")
+	}
+
+	var empty EmptyArgs
+	if err := c.Call("Core.StartTUN", EmptyArgs{}, &empty); err != nil {
+		return fmt.Errorf("Core.StartTUN RPC failed: %w", err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var lastStatus proxy.TUNStatus
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		status, err := c.getTUNStatusWithError()
+		if err != nil {
+			return fmt.Errorf("Core.GetTUNStatus RPC failed: %w", err)
+		}
+		lastStatus = status
+		if status.Running {
+			return nil
+		}
+		if strings.TrimSpace(status.Message) != "" &&
+			!strings.EqualFold(strings.TrimSpace(status.Message), "Windows real TUN dataplane is ready") &&
+			!strings.Contains(strings.ToLower(status.Message), "startup in progress") &&
+			!strings.Contains(strings.ToLower(status.Message), "starting") &&
+			!strings.Contains(strings.ToLower(status.Message), "creating") &&
+			!strings.Contains(strings.ToLower(status.Message), "selected") &&
+			!strings.Contains(strings.ToLower(status.Message), "not running") {
+			return errors.New(status.Message)
+		}
+	}
+	if strings.TrimSpace(lastStatus.Message) != "" {
+		return fmt.Errorf("TUN startup failed: %s", strings.TrimSpace(lastStatus.Message))
+	}
+	return fmt.Errorf("TUN did not enter running state (10s timeout)")
+}
+
+func (c *CoreClient) StopTUN() error {
+	var empty EmptyArgs
+	return c.Call("Core.StopTUN", EmptyArgs{}, &empty)
+}
+
+func (c *CoreClient) GetTUNStatus() proxy.TUNStatus {
+	status, err := c.getTUNStatusWithError()
+	if err != nil {
+		status.Supported = runtime.GOOS == "windows"
+		status.Message = "Core not running"
+	}
+	return status
+}
+
+func (c *CoreClient) getTUNStatusWithError() (proxy.TUNStatus, error) {
+	var reply TUNStatusReply
+	err := c.Call("Core.GetTUNStatus", EmptyArgs{}, &reply)
+	return reply.Status, err
+}
+
+func (c *CoreClient) StartLogCapture() error {
+	if err := c.EnsureRunning(); err != nil {
+		return err
+	}
+	var empty EmptyArgs
+	return c.Call("Core.StartLogCapture", EmptyArgs{}, &empty)
+}
+
+func (c *CoreClient) StopLogCapture() error {
+	var empty EmptyArgs
+	return c.Call("Core.StopLogCapture", EmptyArgs{}, &empty)
+}
+
+func (c *CoreClient) IsLogCaptureEnabled() bool {
+	var reply BoolReply
+	return c.Call("Core.IsLogCaptureEnabled", EmptyArgs{}, &reply) == nil && reply.Value
+}
+
+func (c *CoreClient) GetRecentLogs(limit int) string {
+	var reply StringReply
+	_ = c.Call("Core.GetRecentLogs", LogsArgs{Limit: limit}, &reply)
+	return reply.Value
+}
+
+func (c *CoreClient) ClearLogs() error {
+	var empty EmptyArgs
+	return c.Call("Core.ClearLogs", EmptyArgs{}, &empty)
+}
+
+type RouteEvent struct {
+	Domain string
+	Mode   string
+}
+
+type RouteEventsReply struct {
+	Events []RouteEvent
+}
+
+func (c *CoreClient) GetRouteEvents() []RouteEvent {
+	var reply RouteEventsReply
+	if err := c.Call("Core.GetRouteEvents", EmptyArgs{}, &reply); err != nil {
+		return nil
+	}
+	return reply.Events
+}
+
+// GetActiveConnections 返回 core 进程的实时连接快照；core 未运行或
+// RPC 失败时返回空切片（调用方按"无数据"呈现，而非错误）。
+func (c *CoreClient) GetActiveConnections() []proxy.ConnInfo {
+	var reply ActiveConnectionsReply
+	if err := c.Call("Core.GetActiveConnections", EmptyArgs{}, &reply); err != nil {
+		return []proxy.ConnInfo{}
+	}
+	if reply.Connections == nil {
+		return []proxy.ConnInfo{}
+	}
+	return reply.Connections
+}
+
+func (c *CoreClient) SetProxyMode(mode string) error {
+	if err := c.EnsureRunning(); err != nil {
+		return err
+	}
+	var empty EmptyArgs
+	return c.Call("Core.SetProxyMode", SetModeArgs{Mode: mode}, &empty)
+}
+
+func (c *CoreClient) GetProxyMode() string {
+	var reply StringReply
+	_ = c.Call("Core.GetProxyMode", EmptyArgs{}, &reply)
+	return reply.Value
+}
+
+func sameExecutable(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	left = filepath.Clean(strings.ToLower(left))
+	right = filepath.Clean(strings.ToLower(right))
+	return left == right
+}

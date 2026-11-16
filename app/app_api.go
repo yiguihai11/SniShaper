@@ -1,0 +1,1610 @@
+package app
+
+import (
+	"context"
+
+	"encoding/base64"
+	"encoding/json"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"snishaper/common"
+	"snishaper/core"
+	"snishaper/pkg/sysproxy"
+	"github.com/SnishaperTeam/snishaper-core/certmanager"
+	"github.com/SnishaperTeam/snishaper-core/cfpool"
+	"github.com/SnishaperTeam/snishaper-core/dohresolver"
+	"github.com/SnishaperTeam/snishaper-core/netiface"
+	corelog "github.com/SnishaperTeam/snishaper-core/log"
+	"github.com/SnishaperTeam/snishaper-core/proxy"
+)
+
+func NewApp() *App {
+	execPath, _ := os.Executable()
+	execDir := filepath.Dir(execPath)
+	settingsPath := common.ConfigSettingsPath(execDir)
+	rulesPath := common.ConfigRulesPath(execDir)
+
+	ruleManager := proxy.NewRuleManager(settingsPath, rulesPath,
+		proxy.WithLogger(corelog.Std), proxy.WithRouterDebug(os.Getenv("SNISHAPER_ROUTER_DEBUG") == "1"))
+	// 带迁移报告加载：版本升级/字段修复/备份路径通过
+	// GetLastMigrationReport 展示给用户，加载失败保持原有回退行为。
+	migrationReport, err := ruleManager.LoadConfigWithMigration()
+	if err != nil {
+		log.Printf("[warn] Failed to load config at init: %v", err)
+	}
+
+	port := ruleManager.GetListenPort()
+	if port == "" {
+		port = "8080"
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	proxyServer := proxy.NewProxyServer("127.0.0.1:"+port, proxy.WithLogger(corelog.Std))
+	proxyServer.SetRuleManager(ruleManager)
+	a := &App{
+		ctx:                    ctx,
+		cancel:                 cancel,
+		proxyServer:            proxyServer,
+		ruleManager:            ruleManager,
+		settingsPath:           settingsPath,
+		rulesPath:              rulesPath,
+		certPath:               common.ConfigCertDir(execDir),
+		proxyMarkerPath:        common.ConfigProxyMarker(execDir),
+		ifaces:                 netiface.NewSelector(),
+		launchedAtStartup:      HasLaunchArg("--startup"),
+		autoProxyAtStartup:     HasLaunchArg("--autoproxy"),
+		startupMigrationReport: migrationReport,
+		core:                   core.NewCoreClient(),
+	}
+	// Download tuning is env-tunable but fixed for the process lifetime:
+	// resolving it here keeps the download goroutines off lazy field writes.
+	a.downloadConcurrency, a.downloadChunkSize = initDownloadTuning()
+
+	a.proxyServer.SetCFRefreshCallback(func() {
+		a.RefreshCloudflareIPPool()
+	})
+
+	// Initialize Cloudflare IP pool. ProxyServer.Start kicks off the pool's initial
+	// health check, so no extra trigger is needed here.
+	a.proxyServer.UpdateCloudflareIPPool(ruleManager.GetCloudflareConfig().PreferredIPs)
+
+	// Initialize named IP pools (cloudfront, user-defined CDNs).
+	for _, pc := range ruleManager.GetIPPoolsConfig() {
+		a.proxyServer.UpdateIPPool(pc.Name, pc.PreferredIPs)
+		if pc.AutoUpdate {
+			go a.RefreshIPPool(pc.Name)
+		}
+	}
+
+	ruleManager.InitAutoRouter(a.proxyServer.GetDoHResolver())
+
+	return a
+}
+
+func (a *App) StartProxy() error {
+	a.proxyOpMu.Lock()
+	defer a.proxyOpMu.Unlock()
+
+	if a.core != nil {
+		err := a.core.StartProxy()
+		a.UpdateTrayMenu()
+		a.emitFrontendState()
+		return err
+	}
+
+	a.appendLog("[action] StartProxy called")
+
+	originalPort := a.GetListenPort()
+	if originalPort == 0 {
+		originalPort = 8080
+	}
+
+	availablePort, err := proxy.EnsurePortAvailable(originalPort, []string{"snishaper", "usque"})
+	if err != nil {
+		a.appendLog(fmt.Sprintf("[warn] Port probe failed: %v, attempting with original port", err))
+		availablePort = originalPort
+	}
+
+	if availablePort != originalPort {
+		a.appendLog(fmt.Sprintf("[info] Port %d was occupied. Switched to %d.", originalPort, availablePort))
+		if err := a.SetListenPort(availablePort); err != nil {
+			a.appendLog("[warn] Failed to update config with new port: " + err.Error())
+		}
+	}
+
+	a.syncCFPoolNAT64Prefix()
+	err = a.proxyServer.Start()
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "Only one usage of each socket address") || strings.Contains(msg, "bind: address already in use") {
+			msg += " (核心启动失败：端口仍被占用，请检查权限或手动杀进程)"
+		}
+		a.appendLog("[error] StartProxy failed: " + msg)
+		return fmt.Errorf("%s", msg)
+	}
+
+	a.UpdateTrayMenu()
+	addr := a.proxyServer.GetListenAddr()
+	if err := a.waitForProxyListen(addr, 2*time.Second); err != nil {
+		_ = a.proxyServer.Stop()
+		a.appendLog("[error] StartProxy self-check failed: " + err.Error())
+		return fmt.Errorf("proxy started but not listening on %s: %w", addr, err)
+	}
+
+	status := a.GetSystemProxyStatus()
+	if status.Enabled && a.isManagedSystemProxy(status) {
+		a.appendLog("[info] Auto-syncing system proxy configuration after port update...")
+		_ = a.applySystemProxy(true, availablePort)
+	}
+
+	a.appendLog("[action] StartProxy success")
+	a.emitFrontendState()
+	return nil
+}
+
+func (a *App) StopProxy() error {
+	a.proxyOpMu.Lock()
+	defer a.proxyOpMu.Unlock()
+
+	if a.core != nil {
+		if a.core.GetTUNStatus().Running {
+			_ = a.core.StopTUN()
+		}
+		err := a.core.StopProxy()
+		a.UpdateTrayMenu()
+		a.emitFrontendState()
+		return err
+	}
+
+	a.appendLog("[action] StopProxy called")
+
+	var errs []error
+	status := a.GetSystemProxyStatus()
+	if status.Enabled && a.isManagedSystemProxy(status) {
+		a.appendLog("[info] Disabling system proxy as proxy core is stopping...")
+		if err := a.applySystemProxy(false, 0); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if err := a.proxyServer.Stop(); err != nil {
+		errs = append(errs, err)
+	}
+
+	a.UpdateTrayMenu()
+	a.emitFrontendState()
+
+	if len(errs) > 0 {
+		var msgs []string
+		for _, e := range errs {
+			msgs = append(msgs, e.Error())
+		}
+		joinedErr := strings.Join(msgs, "; ")
+		a.appendLog("[error] StopProxy failed: " + joinedErr)
+		return fmt.Errorf("%s", joinedErr)
+	}
+
+	a.appendLog("[action] StopProxy success")
+	return nil
+}
+
+func (a *App) IsProxyRunning() bool {
+	if a.core != nil {
+		return a.core.IsProxyRunning()
+	}
+	return a.proxyServer.IsRunning()
+}
+
+func (a *App) GetListenPort() int {
+	portStr := a.ruleManager.GetListenPort()
+	if portStr == "" {
+		return 8080
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 8080
+	}
+	return port
+}
+
+func (a *App) restartProxy() error {
+	a.proxyOpMu.Lock()
+	defer a.proxyOpMu.Unlock()
+
+	a.appendLog("[action] restartProxy called")
+
+	if a.core != nil {
+		if err := a.core.StopProxy(); err != nil {
+			return err
+		}
+		if err := a.core.StartProxy(); err != nil {
+			return err
+		}
+		a.UpdateTrayMenu()
+		a.emitFrontendState()
+		return nil
+	}
+
+	if err := a.proxyServer.Stop(); err != nil {
+		return err
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := a.proxyServer.Start(); err != nil {
+		return err
+	}
+	a.UpdateTrayMenu()
+	a.emitFrontendState()
+	return nil
+}
+
+func (a *App) SetListenPort(port int) error {
+	a.appendLog(fmt.Sprintf("[action] SetListenPort called: %d", port))
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port number: %d", port)
+	}
+
+	oldPort := a.GetListenPort()
+	if oldPort == port {
+		return nil
+	}
+
+	a.ruleManager.SetListenPort(strconv.Itoa(port))
+	_ = a.ruleManager.SaveConfig()
+
+	_ = a.proxyServer.SetListenAddr(fmt.Sprintf("127.0.0.1:%d", port))
+
+	if a.IsProxyRunning() {
+		a.appendLog("[info] Port configuration updated. Restarting proxy to apply new port...")
+		if err := a.restartProxy(); err != nil {
+			a.appendLog("[error] Failed to restart proxy on new port: " + err.Error())
+			return err
+		}
+	} else {
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+
+	return nil
+}
+
+func (a *App) RevealMainWindow() {
+	if a.wailsApp == nil {
+		a.pendingShow = true
+		return
+	}
+	// showMainWindow recreates the window when the tracked one is gone, so a
+	// window destroyed behind the app's back can always be brought back.
+	a.showMainWindow()
+}
+
+func (a *App) GetProxyMode() string {
+	if a.core != nil {
+		return a.core.GetProxyMode()
+	}
+	return a.proxyServer.GetMode()
+}
+
+func (a *App) SetProxyMode(mode string) error {
+	a.appendLog(fmt.Sprintf("[action] SetProxyMode: %s", mode))
+	if a.core != nil {
+		err := a.core.SetProxyMode(mode)
+		a.emitFrontendState()
+		return err
+	}
+	err := a.proxyServer.SetMode(mode)
+	if err == nil {
+		a.emitFrontendState()
+	}
+	return err
+}
+
+func (a *App) GetLanguage() string {
+	return a.ruleManager.GetLanguage()
+}
+
+func (a *App) SetLanguage(lang string) error {
+	a.appendLog(fmt.Sprintf("[action] SetLanguage called: %s", lang))
+	return a.ruleManager.SetLanguage(lang)
+}
+
+func (a *App) GetTheme() string {
+	return a.ruleManager.GetTheme()
+}
+
+func (a *App) SetTheme(theme string) error {
+	a.appendLog(fmt.Sprintf("[action] SetTheme called: %s", theme))
+	return a.ruleManager.SetTheme(theme)
+}
+
+func (a *App) GetAppearanceMode() string {
+	return a.ruleManager.GetAppearanceMode()
+}
+
+func (a *App) SetAppearanceMode(mode string) error {
+	a.appendLog(fmt.Sprintf("[action] SetAppearanceMode called: %s", mode))
+	return a.ruleManager.SetAppearanceMode(mode)
+}
+
+func (a *App) GetTUNConfig() proxy.TUNConfig {
+	return a.ruleManager.GetTUNConfig()
+}
+
+// SetTUNInterfaceExclude 设置出站网卡排除列表（逗号分隔，支持 name* 通配）。
+func (a *App) SetTUNInterfaceExclude(exclude string) error {
+	a.appendLog("[action] SetTUNInterfaceExclude called")
+	cfg := a.ruleManager.GetTUNConfig()
+	cfg.ExcludeInterfaces = splitCommaList(exclude)
+	if err := a.ruleManager.UpdateTUNConfig(cfg); err != nil {
+		return err
+	}
+	a.ifaces.Invalidate()
+	if a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return nil
+}
+
+// splitCommaList 解析逗号分隔的配置项，忽略空项。
+func splitCommaList(raw string) []string {
+	out := make([]string, 0)
+	for _, item := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (a *App) UpdateTUNConfig(cfg proxy.TUNConfig) error {
+	a.appendLog("[action] UpdateTUNConfig called")
+
+	old := a.ruleManager.GetTUNConfig()
+	if err := a.ruleManager.UpdateTUNConfig(cfg); err != nil {
+		return err
+	}
+	a.ifaces.Invalidate()
+
+	if a.core == nil {
+		return nil
+	}
+	if !a.core.GetTUNStatus().Running {
+		return nil
+	}
+	if old.Stack == cfg.Stack && old.AdapterName == cfg.AdapterName {
+		a.core.ReloadIfRunning()
+		return nil
+	}
+	a.appendLog("[action] UpdateTUNConfig: restarting TUN to apply stack / adapter changes")
+	if err := a.StopTUN(); err != nil {
+		a.appendLog("[warn] UpdateTUNConfig: StopTUN failed: " + err.Error())
+	}
+	return a.StartTUN()
+}
+
+func (a *App) GetTUNStatus() proxy.TUNStatus {
+	if a.core != nil {
+		return a.core.GetTUNStatus()
+	}
+	return proxy.TUNStatus{
+		Running: false,
+		Message: "core_service_not_running",
+	}
+}
+
+func (a *App) GetNetworkInterfaces() []netiface.Descriptor {
+	cfg := a.ruleManager.GetTUNConfig()
+	descriptors := a.ifaces.List(cfg.InterfaceConfig())
+	a.appendLog(fmt.Sprintf("[action] GetNetworkInterfaces: %d interface(s) listed", len(descriptors)))
+	return descriptors
+}
+
+func (a *App) SetTUNInterface(name string) error {
+	cfg := a.ruleManager.GetTUNConfig()
+	selected := strings.TrimSpace(name)
+	a.appendLog(fmt.Sprintf("[action] SetTUNInterface called: %q", selected))
+
+	if selected != "" {
+		known := false
+		for _, descriptor := range a.ifaces.List(cfg.InterfaceConfig()) {
+			if strings.EqualFold(descriptor.Name, selected) || strconv.Itoa(descriptor.Index) == selected {
+				known = true
+				selected = descriptor.Name
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("network interface not found: %s", selected)
+		}
+	}
+
+	if cfg.InterfaceName == selected {
+		return nil
+	}
+	cfg.InterfaceName = selected
+	if err := a.ruleManager.UpdateTUNConfig(cfg); err != nil {
+		return err
+	}
+	a.ifaces.Invalidate()
+
+	if a.core == nil {
+		return nil
+	}
+	if !a.core.GetTUNStatus().Running {
+		a.appendLog("[action] SetTUNInterface: TUN not running, config saved only")
+		return nil
+	}
+
+	a.appendLog("[action] SetTUNInterface: restarting TUN to apply the new outbound interface")
+	if err := a.StopTUN(); err != nil {
+		a.appendLog("[warn] SetTUNInterface: StopTUN failed: " + err.Error())
+	}
+	return a.StartTUN()
+}
+
+func (a *App) StartTUN() error {
+	if a.core == nil {
+		return fmt.Errorf("core client not initialized")
+	}
+
+	a.appendLog("[action] StartTUN called")
+
+	// Disable managed system proxy before TUN to avoid port/resource conflicts
+	status := a.GetSystemProxyStatus()
+	restoreSysProxy := false
+	if status.Enabled && a.isManagedSystemProxy(status) {
+		a.appendLog("[action] StartTUN: disabling managed system proxy before TUN")
+		if err := a.applySystemProxy(false, 0); err != nil {
+			a.appendLog("[warn] StartTUN: failed to disable system proxy: " + err.Error())
+		} else {
+			restoreSysProxy = true
+		}
+	}
+	a.setTUNRestoreSysProxy(restoreSysProxy)
+
+	captureEnabled := a.IsLogCaptureEnabled()
+
+	a.runSafeAsync("start TUN", func() {
+		err := a.core.StartTUN()
+		if err == nil && captureEnabled {
+			_ = a.core.StartLogCapture()
+		}
+		if err != nil {
+			a.appendLog("[error] StartTUN failed: " + err.Error())
+			// 启动失败必须把系统代理还原回去：此前已为 TUN 关闭，
+			// 若不复原，用户会同时失去 TUN 与系统代理两条通路，表现为彻底断网。
+			// StartTUN 是异步 RPC，此处 err 为 nil 时仍需用实际状态复核。
+			if a.GetTUNStatus().Running {
+				a.restoreSysProxyAfterTUN()
+			} else {
+				a.appendLog("[warn] StartTUN: TUN not running, restoring managed system proxy")
+				a.restoreSysProxyAfterTUN()
+			}
+		}
+		a.emitFrontendState()
+	})
+	return nil
+}
+
+func (a *App) StopTUN() error {
+	if a.core == nil {
+		return fmt.Errorf("core client not initialized")
+	}
+
+	err := a.core.StopTUN()
+	if err != nil {
+		a.appendLog("[error] StopTUN failed: " + err.Error())
+	}
+
+	// Restore system proxy if it was disabled for TUN
+	a.restoreSysProxyAfterTUN()
+
+	a.emitFrontendState()
+	return err
+}
+
+func (a *App) setTUNRestoreSysProxy(value bool) {
+	a.tunSysProxyMu.Lock()
+	a.tunRestoreSysProxy = value
+	a.tunSysProxyMu.Unlock()
+}
+
+// restoreSysProxyAfterTUN 在 TUN 停止或启动失败后还原被临时关闭的系统代理。
+// 读改写必须持锁：tunRestoreSysProxy 同时被调用方与 StartTUN 的异步 goroutine 访问。
+func (a *App) restoreSysProxyAfterTUN() {
+	a.tunSysProxyMu.Lock()
+	shouldRestore := a.tunRestoreSysProxy
+	a.tunRestoreSysProxy = false
+	a.tunSysProxyMu.Unlock()
+	if !shouldRestore {
+		return
+	}
+	port := a.GetListenPort()
+	a.appendLog(fmt.Sprintf("[action] restoring managed system proxy on :%d", port))
+	if err := a.applySystemProxy(true, port); err != nil {
+		a.appendLog("[error] failed to restore system proxy: " + err.Error())
+	}
+}
+
+func (a *App) ExportCert() string {
+	if a.certManager == nil {
+		return ""
+	}
+	data, err := a.certManager.ExportCert()
+	if err != nil {
+		a.appendLog("Export cert error: " + err.Error())
+		return ""
+	}
+	return string(data)
+}
+
+func (a *App) ExportConfig() (string, error) {
+	return a.ruleManager.ExportConfig()
+}
+
+func (a *App) ImportConfig(content string) error {
+	a.appendLog("[action] ImportConfig called")
+	err := a.ruleManager.ImportConfig(content)
+	if err == nil {
+		a.proxyServer.UpdateCloudflareIPPool(a.ruleManager.GetCloudflareConfig().PreferredIPs)
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+		a.UpdateTrayMenu()
+	}
+	return err
+}
+
+func (a *App) ImportConfigWithSummary(content string) (proxy.ImportSummary, error) {
+	a.appendLog("[action] ImportConfigWithSummary called")
+	summary, err := a.ruleManager.ImportConfigWithSummary(content)
+	if err == nil {
+		a.proxyServer.UpdateCloudflareIPPool(a.ruleManager.GetCloudflareConfig().PreferredIPs)
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+		a.UpdateTrayMenu()
+	}
+	return summary, err
+}
+
+func (a *App) InstallCA() error {
+	if a.certManager == nil {
+		return fmt.Errorf("cert manager not initialized")
+	}
+	a.appendLog("[cert] InstallCA called")
+	if err := a.certManager.InstallCA(); err != nil {
+		a.appendLog("[cert] InstallCA failed: " + err.Error())
+		return err
+	}
+	a.appendLog("[cert] InstallCA succeeded")
+	return nil
+}
+
+func (a *App) OpenCAFile() error {
+	if a.certManager == nil {
+		return fmt.Errorf("cert manager not initialized")
+	}
+	a.appendLog("[cert] OpenCAFile called")
+	return a.certManager.OpenCAFile()
+}
+
+func (a *App) OpenCertDir() error {
+	if a.certManager == nil {
+		return fmt.Errorf("cert manager not initialized")
+	}
+	a.appendLog("[cert] OpenCertDir called")
+	return a.certManager.OpenCertDir()
+}
+
+func (a *App) RegenerateCert() error {
+	if a.certManager == nil {
+		return fmt.Errorf("cert manager not initialized")
+	}
+	a.appendLog("[cert] RegenerateCert called")
+	if err := a.certManager.RegenerateCA(); err != nil {
+		a.appendLog("[cert] RegenerateCert failed: " + err.Error())
+		return err
+	}
+	if a.core != nil {
+		a.core.ReloadCertificateIfRunning()
+	}
+	a.appendLog("[cert] RegenerateCert succeeded")
+	return nil
+}
+
+func (a *App) UninstallCert(thumbprint string) error {
+	if a.certManager == nil {
+		a.appendLog("[cert] UninstallCert failed: cert manager not initialized")
+		return fmt.Errorf("cert manager not initialized")
+	}
+	a.appendLog("[cert] UninstallCert called: " + thumbprint)
+	if err := a.certManager.UninstallCertificate(thumbprint); err != nil {
+		a.appendLog("[cert] UninstallCert failed: " + err.Error())
+		return err
+	}
+	a.appendLog("[cert] UninstallCert succeeded: " + thumbprint)
+	return nil
+}
+
+// GetCore returns the underlying core RPC client (headless/CLI use).
+func (a *App) GetCore() *core.CoreClient {
+	return a.core
+}
+
+// GetActiveConnections 返回 core 进程的实时连接快照（有界注册表，
+// 最多 4096 条），供连接查看器轮询。core 未运行时返回空切片。
+func (a *App) GetActiveConnections() []proxy.ConnInfo {
+	if a.core == nil {
+		return []proxy.ConnInfo{}
+	}
+	return a.core.GetActiveConnections()
+}
+
+// ExplainMatch 用与真实连接完全相同的匹配管线模拟 host 的处理决策
+//（不产生路由事件）。全局模式取运行中的 core；process 为可选的
+// 进程名（per-app 规则模拟）。
+func (a *App) ExplainMatch(host, process string) proxy.MatchExplanation {
+	return a.ruleManager.ExplainMatch(host, a.GetProxyMode(), process)
+}
+
+// GetAppRecentLogs returns only the app-side in-memory log lines.
+func (a *App) GetAppRecentLogs(limit int) string {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	if a.logBuffer != nil {
+		lines := a.logBuffer.Snapshot(limit)
+		if len(lines) > 0 {
+			return strings.Join(lines, "\n")
+		}
+	}
+	return ""
+}
+
+// GetCoreRecentLogs returns only the core subprocess log lines.
+func (a *App) GetCoreRecentLogs(limit int) string {
+	if a.core != nil {
+		return a.core.GetRecentLogs(limit)
+	}
+	return ""
+}
+
+func (a *App) GetRecentLogs(limit int) string {
+	if a.core != nil {
+		if logs := a.core.GetRecentLogs(limit); strings.TrimSpace(logs) != "" {
+			return logs
+		}
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+
+	if a.logBuffer != nil {
+		lines := a.logBuffer.Snapshot(limit)
+		if len(lines) > 0 {
+			return strings.Join(lines, "\n")
+		}
+	}
+
+	return ""
+}
+
+func (a *App) ClearLogs() error {
+	if a.core != nil {
+		_ = a.core.ClearLogs()
+	}
+	if a.logBuffer != nil {
+		a.logBuffer.Clear()
+	}
+	a.appendLog("[action] Logs cleared")
+	return nil
+}
+
+// LogFileInfo describes a persisted log file in <execDir>/log/.
+type LogFileInfo struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+// GetLogFiles lists all persisted log files, newest first. The name is the
+// run timestamp (e.g. 2026-08-08_14-30-05.log).
+func (a *App) GetLogFiles() []LogFileInfo {
+	if a.logDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(a.logDir)
+	if err != nil {
+		return nil
+	}
+	var files []LogFileInfo
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".log") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, LogFileInfo{Name: e.Name(), Size: info.Size()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name > files[j].Name })
+	return files
+}
+
+// GetLogFileContent returns the tail (last 500 lines) of a log file.
+// The name is sanitized to the directory, so only existing log files are reachable.
+func (a *App) GetLogFileContent(name string) string {
+	if a.logDir == "" || filepath.Base(name) != name {
+		return ""
+	}
+	return tailFileLines(filepath.Join(a.logDir, name), 500)
+}
+
+// OpenLogFile opens a log file with the system default application (e.g. Notepad).
+// The name is sanitized to the directory, so only existing log files are reachable.
+func (a *App) OpenLogFile(name string) {
+	if a.logDir == "" || filepath.Base(name) != name {
+		return
+	}
+	path := filepath.Join(a.logDir, name)
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	if err := common.OpenTarget(path); err != nil {
+		a.appendLog(fmt.Sprintf("[logs] Failed to open log file %s: %v", name, err))
+	}
+}
+
+// CleanOldLogs deletes all persisted log files except the one being written by
+// the current run. Returns the number of files removed.
+func (a *App) CleanOldLogs() (int, error) {
+	if a.logDir == "" {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(a.logDir)
+	if err != nil {
+		return 0, err
+	}
+	current := filepath.Base(a.logFilePath)
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".log") {
+			continue
+		}
+		if e.Name() == current {
+			continue
+		}
+		if err := os.Remove(filepath.Join(a.logDir, e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func tailFileLines(path string, maxLines int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(data) > 2*1024*1024 {
+		data = data[len(data)-2*1024*1024:]
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) GetStats() core.StatsReply {
+	if a.core != nil {
+		var stats core.StatsReply
+		if err := a.core.Call("Core.GetStats", core.EmptyArgs{}, &stats); err == nil {
+			return stats
+		}
+	}
+	down, up, etc := a.proxyServer.GetStats()
+	return core.StatsReply{
+		Down: down,
+		Up:   up,
+		Etc:  etc,
+	}
+}
+
+// setCertManager stores the cert manager under the protecting mutex; both the
+// startup hook and the lazy GUI path funnel through here.
+func (a *App) setCertManager(cm *certmanager.CertManager) {
+	a.certManagerMu.Lock()
+	a.certManager = cm
+	a.certManagerMu.Unlock()
+}
+
+// ensureCertManager lazily initializes the cert manager for bindings that can
+// run before the startup hook (or in config-only CLI commands). Concurrent
+// callers are serialized by certManagerMu, so the pointer write is race-free.
+func (a *App) ensureCertManager() {
+	a.certManagerMu.Lock()
+	defer a.certManagerMu.Unlock()
+	if a.certManager == nil {
+		if cm, err := certmanager.InitCertManager(a.certPath); err == nil {
+			a.certManager = cm
+		}
+	}
+}
+
+func (a *App) GetCACertPath() string {
+	a.ensureCertManager()
+	a.certManagerMu.Lock()
+	cm := a.certManager
+	a.certManagerMu.Unlock()
+	if cm == nil {
+		return ""
+	}
+	return cm.GetCACertPath()
+}
+
+func (a *App) GetCACertPEM() string {
+	if a.certManager != nil {
+		return a.certManager.GetCACertPEM()
+	}
+	return ""
+}
+
+func (a *App) GetCAInstallStatus() CAInstallStatus {
+	a.ensureCertManager()
+	a.certManagerMu.Lock()
+	cm := a.certManager
+	a.certManagerMu.Unlock()
+	if cm == nil {
+		return CAInstallStatus{
+			CertPath:    a.certPath,
+			Platform:    runtime.GOOS,
+			InstallHelp: "证书状态初始化中",
+		}
+	}
+	status := cm.GetCAInstallStatus()
+	return CAInstallStatus{
+		Installed:   status.Installed,
+		Platform:    status.Platform,
+		CertPath:    status.CertPath,
+		InstallHelp: status.InstallHelp,
+	}
+}
+
+func (a *App) GetInstalledCerts() []certmanager.InstalledCert {
+	if a.certManager == nil {
+		a.appendLog("[cert] GetInstalledCerts failed: cert manager not initialized")
+		return []certmanager.InstalledCert{}
+	}
+	a.appendLog("[cert] GetInstalledCerts called")
+	certs, err := a.certManager.GetInstalledCertificates()
+	if err != nil {
+		a.appendLog("GetInstalledCertificates error: " + err.Error())
+		return []certmanager.InstalledCert{}
+	}
+	a.appendLog(fmt.Sprintf("[cert] GetInstalledCerts succeeded: %d certs", len(certs)))
+	return certs
+}
+
+func (a *App) GetSiteGroups() []proxy.SiteGroup {
+	return a.ruleManager.GetSiteGroups()
+}
+
+// Site-group rules are saved verbatim: dns_mode / NAT64 are the user's intent
+// (config layer) and must not be rewritten based on the current network state.
+// Whether IPv6 is actually usable is a runtime-execution concern handled by the
+// dialer (orderIPsByDNSMode), not by the save path.
+func (a *App) AddSiteGroup(sg proxy.SiteGroup) error {
+	err := a.ruleManager.AddSiteGroup(sg)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) UpdateSiteGroup(sg proxy.SiteGroup) error {
+	err := a.ruleManager.UpdateSiteGroup(sg)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) DeleteSiteGroup(id string) error {
+	err := a.ruleManager.DeleteSiteGroup(id)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) GetUpstreams() []proxy.Upstream {
+	return a.ruleManager.GetUpstreams()
+}
+
+func (a *App) AddUpstream(u proxy.Upstream) error {
+	err := a.ruleManager.AddUpstream(u)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) UpdateUpstream(u proxy.Upstream) error {
+	err := a.ruleManager.UpdateUpstream(u)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) DeleteUpstream(id string) error {
+	err := a.ruleManager.DeleteUpstream(id)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+// 分层规则（issue #172）：前端根据层级信息标注规则的来源，并只对
+// override/删除态提供"恢复为上游默认"操作。
+func (a *App) GetRulesLayerInfo() proxy.RulesLayerInfo {
+	return a.ruleManager.GetRulesLayerInfo()
+}
+
+func (a *App) RevertSiteGroupToUpstream(id string) error {
+	err := a.ruleManager.RevertSiteGroupToUpstream(id)
+	if err == nil {
+		a.appendLog(fmt.Sprintf("[action] site group %s reverted to upstream", id))
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+	return err
+}
+
+func (a *App) RevertUpstreamConfigToUpstream(id string) error {
+	err := a.ruleManager.RevertUpstreamConfigToUpstream(id)
+	if err == nil {
+		a.appendLog(fmt.Sprintf("[action] upstream %s reverted to upstream default", id))
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+	return err
+}
+
+func (a *App) GetCloudflareConfig() proxy.CloudflareConfig {
+	return a.ruleManager.GetCloudflareConfig()
+}
+
+func (a *App) UpdateCloudflareConfig(cfg proxy.CloudflareConfig) error {
+	oldCfg := a.ruleManager.GetCloudflareConfig()
+
+	err := a.ruleManager.UpdateCloudflareConfig(cfg)
+	if err == nil {
+		a.proxyServer.UpdateCloudflareIPPool(cfg.PreferredIPs)
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+		if cfg.AutoUpdate && !oldCfg.AutoUpdate {
+			a.appendLog("[Cloudflare] Auto update enabled, triggering fetch...")
+			go a.RefreshCloudflareIPPool()
+		}
+		a.UpdateTrayMenu()
+	}
+	return err
+}
+
+func (a *App) GetCloudflareIPStats() []*cfpool.IPStats {
+	return a.proxyServer.GetAllCFIPsWithStats()
+}
+
+func (a *App) RefreshCloudflareIPPool() {
+	cfg := a.ruleManager.GetCloudflareConfig()
+	ips, err := cfpool.FetchCloudflareIPs(cfg.APIKey)
+	if err != nil {
+		log.Printf("[Cloudflare] Failed to fetch preferred IPs: %v", err)
+		a.appendLog("[error] Cloudflare 优选 IP 获取失败: " + err.Error())
+		return
+	}
+
+	if len(ips) > 0 {
+		log.Printf("[Cloudflare] Successfully fetched %d preferred IPs", len(ips))
+		a.appendLog(fmt.Sprintf("[success] 成功获取 %d 个 Cloudflare 优选 IP", len(ips)))
+
+		a.proxyServer.UpdateCloudflareIPPool(ips)
+		a.proxyServer.SetCFPoolFetchTime(time.Now())
+		cfg.PreferredIPs = ips
+		_ = a.ruleManager.UpdateCloudflareConfig(cfg)
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+}
+
+func (a *App) ForceFetchCloudflareIPs() error {
+	cfg := a.ruleManager.GetCloudflareConfig()
+	ips, err := cfpool.FetchCloudflareIPs(cfg.APIKey)
+	if err != nil {
+		log.Printf("[Cloudflare] Failed to fetch preferred IPs: %v", err)
+		a.appendLog("[error] 手动获取失败: " + err.Error())
+		return err
+	}
+
+	if len(ips) > 0 {
+		log.Printf("[Cloudflare] Successfully fetched %d preferred IPs", len(ips))
+		a.appendLog(fmt.Sprintf("[success] 成功获取 %d 个 Cloudflare 优选 IP", len(ips)))
+		a.proxyServer.UpdateCloudflareIPPool(ips)
+		a.proxyServer.SetCFPoolFetchTime(time.Now())
+		cfg.PreferredIPs = ips
+		_ = a.ruleManager.UpdateCloudflareConfig(cfg)
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+		a.proxyServer.TriggerCFHealthCheck()
+	}
+	return nil
+}
+
+func (a *App) RemoveInvalidCFIPs() error {
+	a.appendLog("[Cloudflare] Removing invalid/slow IPs...")
+	a.proxyServer.RemoveInvalidCFIPs()
+	return nil
+}
+
+func (a *App) TriggerCFHealthCheck() error {
+	a.appendLog("[Cloudflare] Manual health check triggered...")
+	a.proxyServer.TriggerCFHealthCheck()
+	return nil
+}
+
+// GetIPPools returns the named IP pool configs (cloudfront, user-defined CDNs).
+func (a *App) GetIPPools() []proxy.IPPoolConfig {
+	return a.ruleManager.GetIPPoolsConfig()
+}
+
+// UpdateIPPools saves the full named-pool list and applies the diff to the
+// running proxy: added or changed pools get their IPs applied, removed pools
+// are dropped so their rules fall back to DNS dialing.
+func (a *App) UpdateIPPools(pools []proxy.IPPoolConfig) error {
+	old := a.ruleManager.GetIPPoolsConfig()
+	oldAutoUpdate := make(map[string]bool, len(old))
+	for _, pc := range old {
+		oldAutoUpdate[pc.Name] = pc.AutoUpdate
+	}
+
+	if err := a.ruleManager.UpdateIPPoolsConfig(pools); err != nil {
+		return err
+	}
+
+	current := make(map[string]bool, len(pools))
+	for _, pc := range pools {
+		current[pc.Name] = true
+	}
+	for _, pc := range old {
+		if !current[pc.Name] {
+			a.proxyServer.RemoveIPPool(pc.Name)
+		}
+	}
+	for _, pc := range a.ruleManager.GetIPPoolsConfig() {
+		a.proxyServer.UpdateIPPool(pc.Name, pc.PreferredIPs)
+		if pc.AutoUpdate && !oldAutoUpdate[pc.Name] {
+			go a.RefreshIPPool(pc.Name)
+		}
+	}
+	return nil
+}
+
+// GetIPPoolStats returns every IP of the named pool with its health stats.
+func (a *App) GetIPPoolStats(name string) []*cfpool.IPStats {
+	return a.proxyServer.GetIPPoolStats(name)
+}
+
+// ForceFetchIPPoolIPs pulls fresh preferred IPs for the named pool from its
+// CDN source (manual action, ignores AutoUpdate).
+func (a *App) ForceFetchIPPoolIPs(name string) error {
+	return a.fetchIPPool(name, true)
+}
+
+// RefreshIPPool fetches fresh IPs when the pool is stale or empty and its
+// AutoUpdate flag is on.
+func (a *App) RefreshIPPool(name string) {
+	pools := a.ruleManager.GetIPPoolsConfig()
+	for _, pc := range pools {
+		if pc.Name == name {
+			if pc.AutoUpdate {
+				_ = a.fetchIPPool(name, false)
+			}
+			return
+		}
+	}
+}
+
+func (a *App) fetchIPPool(name string, force bool) error {
+	pool := a.proxyServer.GetIPPool(name)
+	if !force {
+		if pool != nil && pool.HasIPs() && !pool.IsStale(24*time.Hour) {
+			return nil
+		}
+	}
+
+	var cfg *proxy.IPPoolConfig
+	for _, pc := range a.ruleManager.GetIPPoolsConfig() {
+		if pc.Name == name {
+			c := pc
+			cfg = &c
+			break
+		}
+	}
+	if cfg == nil {
+		return fmt.Errorf("IP pool %q not found", name)
+	}
+
+	ips, err := cfpool.FetchCDNIPs(name, cfg.APIKey)
+	if err != nil {
+		a.appendLog(fmt.Sprintf("[error] IP pool %s fetch failed: %s", name, err.Error()))
+		return err
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("IP pool %s: source returned no IPs", name)
+	}
+
+	a.appendLog(fmt.Sprintf("[success] IP pool %s: fetched %d preferred IPs", name, len(ips)))
+	a.proxyServer.UpdateIPPool(name, ips)
+	a.proxyServer.SetIPPoolFetchTime(name, time.Now())
+	cfg.PreferredIPs = ips
+	return a.saveIPPoolConfig(*cfg)
+}
+
+// saveIPPoolConfig upserts a single named pool into the persisted list.
+func (a *App) saveIPPoolConfig(cfg proxy.IPPoolConfig) error {
+	pools := a.ruleManager.GetIPPoolsConfig()
+	found := false
+	for i, pc := range pools {
+		if pc.Name == cfg.Name {
+			pools[i] = cfg
+			found = true
+			break
+		}
+	}
+	if !found {
+		pools = append(pools, cfg)
+	}
+	return a.ruleManager.UpdateIPPoolsConfig(pools)
+}
+
+// RemoveInvalidIPPoolIPs drops failed IPs from the named pool.
+func (a *App) RemoveInvalidIPPoolIPs(name string) int {
+	return a.proxyServer.RemoveInvalidIPPoolIPs(name)
+}
+
+// TriggerIPPoolHealthCheck starts an immediate health-check pass on the named pool.
+func (a *App) TriggerIPPoolHealthCheck(name string) {
+	a.proxyServer.TriggerIPPoolHealthCheck(name)
+}
+
+func (a *App) GetECHProfiles() []proxy.ECHProfile {
+	return a.ruleManager.GetECHProfiles()
+}
+
+func (a *App) UpsertECHProfile(p proxy.ECHProfile) error {
+	err := a.ruleManager.UpsertECHProfile(p)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) DeleteECHProfile(id string) error {
+	err := a.ruleManager.DeleteECHProfile(id)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) FetchECHConfig(domain string, dohURL string) (string, error) {
+	a.appendLog(fmt.Sprintf("[DoH] Fetching ECH for %s via %s", domain, dohURL))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	config, err := a.proxyServer.FetchECH(ctx, domain, dohURL)
+	if err != nil {
+		a.appendLog(fmt.Sprintf("[error] ECH fetch failed: %v", err))
+		return "", err
+	}
+
+	if len(config) == 0 {
+		return "", fmt.Errorf("no ECH config found")
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(config)
+	a.appendLog(fmt.Sprintf("[success] ECH fetch ok (%d bytes)", len(config)))
+	return encoded, nil
+}
+
+func (a *App) GetDNSNodes() []proxy.DNSNode {
+	return a.ruleManager.GetDNSNodes()
+}
+
+func (a *App) AddDNSNode(n proxy.DNSNode) error {
+	err := a.ruleManager.AddDNSNode(n)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) UpdateDNSNode(n proxy.DNSNode) error {
+	err := a.ruleManager.UpdateDNSNode(n)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) DeleteDNSNode(id string) error {
+	err := a.ruleManager.DeleteDNSNode(id)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+func (a *App) SetDNSNodePriority(id string, targetIndex int) error {
+	err := a.ruleManager.SetDNSNodePriority(id, targetIndex)
+	if err == nil && a.core != nil {
+		a.core.ReloadIfRunning()
+	}
+	return err
+}
+
+type DNSNodeTestResult struct {
+	Success bool     `json:"success"`
+	Latency int64    `json:"latency"`
+	Error   string   `json:"error,omitempty"`
+	IPs     []string `json:"ips,omitempty"`
+}
+
+func (a *App) TestDNSNode(id string) (DNSNodeTestResult, error) {
+	nodes := a.ruleManager.GetDNSNodes()
+	var node *proxy.DNSNode
+	for i := range nodes {
+		if nodes[i].ID == id {
+			node = &nodes[i]
+			break
+		}
+	}
+	if node == nil {
+		return DNSNodeTestResult{Success: false, Error: "node not found"}, nil
+	}
+
+	resolver := a.proxyServer.GetDoHResolver()
+	if resolver == nil {
+		return DNSNodeTestResult{Success: false, Error: "DNS resolver not initialized"}, nil
+	}
+
+	// Convert proxy.DNSNode to dohresolver.DNSNode
+	dohNode := dohresolver.DNSNode{
+		Name:          node.Name,
+		URL:           node.URL,
+		SNI:           node.SNI,
+		IPs:           node.IPs,
+		ECHEnabled:    node.ECHEnabled,
+		ECHProfileID:  node.ECHProfileID,
+		ECHAutoUpdate: node.ECHAutoUpdate,
+		QUIC:          node.QUIC,
+		Enabled:       node.Enabled,
+		CertVerify: dohresolver.CertVerifyConfig{
+			Mode:                  node.CertVerify.Mode,
+			Names:                 node.CertVerify.Names,
+			Suffixes:              node.CertVerify.Suffixes,
+			SPKISHA256:            node.CertVerify.SPKISHA256,
+			AllowUnknownAuthority: node.CertVerify.AllowUnknownAuthority,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	ips, err := resolver.TestNode(ctx, dohNode)
+	latency := time.Since(start).Milliseconds()
+
+	if err != nil {
+		return DNSNodeTestResult{Success: false, Latency: latency, Error: err.Error()}, nil
+	}
+
+	return DNSNodeTestResult{Success: true, Latency: latency, IPs: ips}, nil
+}
+
+func (a *App) GetAutoRoutingConfig() proxy.AutoRoutingConfig {
+	return a.ruleManager.GetAutoRoutingConfig()
+}
+
+func (a *App) UpdateAutoRoutingConfig(cfg proxy.AutoRoutingConfig) error {
+	err := a.ruleManager.UpdateAutoRoutingConfig(cfg)
+	if err == nil {
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+	return err
+}
+
+func (a *App) GetAutoRoutingStatus() proxy.GFWListStatus {
+	return a.ruleManager.GetAutoRoutingStatus()
+}
+
+func (a *App) GetAppVersion() string {
+	if strings.TrimSpace(buildVersion) != "" {
+		return buildVersion
+	}
+	if v, err := manifestVersionFull(); err == nil && v != "" {
+		return v
+	}
+	return "1.29"
+}
+
+// manifestVersion reads the version from Package.appxmanifest (dev) or
+// AppxManifest.xml (installed MSIX), searching up from the exe directory.
+func manifestVersion() (string, error) {
+	dir := filepath.Dir(os.Args[0])
+	for {
+		for _, name := range []string{"Package.appxmanifest", "AppxManifest.xml"} {
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err == nil {
+				return parseManifestVersion(data)
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("manifest not found")
+		}
+		dir = parent
+	}
+}
+
+func parseManifestVersion(data []byte) (string, error) {
+	var pkg struct {
+		Identity struct {
+			Version string `xml:"Version,attr"`
+		} `xml:"Identity"`
+	}
+	if err := xml.Unmarshal(data, &pkg); err != nil {
+		return "", err
+	}
+	parts := strings.Split(pkg.Identity.Version, ".")
+	for len(parts) > 1 && parts[len(parts)-1] == "0" {
+		parts = parts[:len(parts)-1]
+	}
+	return strings.Join(parts, "."), nil
+}
+
+func (a *App) OpenURL(rawURL string) {
+	if rawURL == "" {
+		return
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		a.appendLog(fmt.Sprintf("[update] Invalid or unsupported URL: %s", rawURL))
+		return
+	}
+	if err := common.OpenTarget(parsed.String()); err != nil {
+		a.appendLog(fmt.Sprintf("[update] Failed to open URL: %v", err))
+	}
+}
+
+func (a *App) QuitApp() {
+	a.shouldQuit = true
+	a.shutdown()
+	a.closeMainWindow()
+	a.quitAppUI()
+}
+
+func (a *App) waitForProxyListen(addr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond) // Faster dial
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(20 * time.Millisecond) // Faster retry
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout")
+	}
+	return lastErr
+}
+
+func (a *App) syncCFPoolNAT64Prefix() {
+	if a.proxyServer != nil && a.proxyServer.GetCFPool() != nil {
+		profiles := a.ruleManager.GetNAT64Profiles()
+		var defaultPrefix string
+		for _, p := range profiles {
+			if strings.TrimSpace(p.Prefix) != "" {
+				defaultPrefix = p.Prefix
+				break
+			}
+		}
+		a.proxyServer.GetCFPool().SetNAT64Prefix(defaultPrefix)
+	}
+}
+
+func (a *App) GetNAT64Profiles() []proxy.NAT64Profile {
+	return a.ruleManager.GetNAT64Profiles()
+}
+
+func (a *App) AddNAT64Profile(p proxy.NAT64Profile) error {
+	err := a.ruleManager.AddNAT64Profile(p)
+	if err == nil {
+		a.syncCFPoolNAT64Prefix()
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+	return err
+}
+
+func (a *App) UpdateNAT64Profile(p proxy.NAT64Profile) error {
+	err := a.ruleManager.UpdateNAT64Profile(p)
+	if err == nil {
+		a.syncCFPoolNAT64Prefix()
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+	return err
+}
+
+func (a *App) DeleteNAT64Profile(id string) error {
+	err := a.ruleManager.DeleteNAT64Profile(id)
+	if err == nil {
+		a.syncCFPoolNAT64Prefix()
+		if a.core != nil {
+			a.core.ReloadIfRunning()
+		}
+	}
+	return err
+}
+
+func (a *App) TestNAT64Profile(prefix string) (int64, error) {
+	ips, err := net.LookupIP("www.cloudflare.com")
+	if err != nil || len(ips) == 0 {
+		return 0, fmt.Errorf("DNS lookup failed: %w", err)
+	}
+
+	var mappedIP string
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			mapped, ok := common.MapNAT64Addr(ip.String(), prefix)
+			if ok {
+				mappedIP = mapped
+				break
+			}
+		}
+	}
+
+	if mappedIP == "" {
+		return 0, fmt.Errorf("no IPv4 address available for mapping")
+	}
+
+	target := net.JoinHostPort(mappedIP, "443")
+	dialer := &net.Dialer{Timeout: 4 * time.Second}
+	start := time.Now()
+	conn, err := dialer.Dial("tcp", target)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	return time.Since(start).Milliseconds(), nil
+}
+
+func (a *App) GetMigrationEnabled() bool {
+	return a.ruleManager.GetMigrationEnabled()
+}
+
+// GetLastMigrationReport 返回启动加载配置时产生的迁移/校验报告
+// （版本迁移、字段修复、备份路径；Errors 非空表示配置无法安全迁移）。
+// 与 GetMigrationEnabled 的「会话迁移代理模式」无关。
+func (a *App) GetLastMigrationReport() proxy.MigrationReport {
+	return a.startupMigrationReport
+}
+
+func (a *App) SetMigrationEnabled(enabled bool) error {
+	a.appendLog(fmt.Sprintf("[action] SetMigrationEnabled: %v", enabled))
+	return a.ruleManager.SetMigrationEnabled(enabled)
+}
+
+func (a *App) GetMigrationServer() string {
+	return a.ruleManager.GetMigrationServer()
+}
+
+func (a *App) SetMigrationServer(server string) error {
+	a.appendLog(fmt.Sprintf("[action] SetMigrationServer: %s", server))
+	return a.ruleManager.SetMigrationServer(server)
+}
+
+func (a *App) TestMigration(server string) (string, error) {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return "", fmt.Errorf("migration server URL is empty")
+	}
+	a.appendLog(fmt.Sprintf("[action] TestMigration: %s", server))
+
+	// Test by connecting to cloudflare.com:443
+	testTarget := "cloudflare.com:443"
+	apiURL := fmt.Sprintf("%s?target=%s&ip=1.1.1.1", server, testTarget)
+	a.appendLog(fmt.Sprintf("[Migration] GET %s", apiURL))
+
+	httpClient := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{Proxy: sysproxy.UpstreamProxyFunc()},
+	}
+	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response to check if we got a valid ticket
+	var result struct {
+		Ticket      string `json:"ticket"`
+		CipherSuite uint16 `json:"cipher_suite"`
+		Version     uint16 `json:"version"`
+		TargetIP    string `json:"target_ip"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("invalid response: %v", err)
+	}
+
+	if result.Ticket == "" {
+		return "", fmt.Errorf("no session ticket in response")
+	}
+
+	msg := fmt.Sprintf("Session ticket acquired! IP: %s, Cipher: 0x%04X, Version: 0x%04X",
+		result.TargetIP, result.CipherSuite, result.Version)
+	a.appendLog(fmt.Sprintf("[Migration] Test success: %s", msg))
+	return msg, nil
+}
